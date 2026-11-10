@@ -1,0 +1,23 @@
+{
+  "name": "STM32FOC",
+  "mcu": "stm32",
+  "version": "0.1.0",
+  "sdk": "bare-metal",
+  "dependencies": {},
+  "build": {
+    "optimization": "-Os",
+    "defines": []
+  },
+  "openocd_cfg": "openocd.cfg",
+  "stm32": {
+    "line": "STM32F103 medium-density",
+    "devId": "0x410",
+    "cpu": "cortex-m3",
+    "flashKB": 64,
+    "ramKBMin": 20,
+    "detected": true,
+    "flashDriver": "stm32f1x",
+    "flashSupported": true,
+    "openocd": "xpack"
+  }
+}

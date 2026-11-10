@@ -1,0 +1,9 @@
+# firmware build output
+build/
+
+# host monitor build output (foc-monitor.exe is published as a release asset)
+dist/
+__pycache__/
+
+# UnityMbed IDE session state (machine-specific)
+.unitymbed/
