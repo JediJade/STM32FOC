@@ -167,6 +167,7 @@ Identification lands within 1 % of the real motor on all four quantities.
 | `fwsim.py` | the firmware's control arithmetic and console in Python: a stand-in for a board, and its self-check |
 | `braun.py` | drawing kit: round buttons, sliders, dial, dark screens, all anti-aliased with Pillow |
 | `build-exe.cmd` | builds `dist\FOC.exe` |
+| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it) |
 
 `fwsim.py` is a test double, not evidence. On the same voltage step its
 256 recorded samples differ from the board's by at most 2 counts; on a speed
