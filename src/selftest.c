@@ -1,3 +1,4 @@
+#include "capture.h"
 #include "stm32f103xb.h"
 #include "selftest.h"
 #include "tim1.h"
@@ -318,6 +319,9 @@ void ADC1_2_IRQHandler(void)
        * nothing would ever drive it.
        */
       outer_tick(foc_loop_angle());
+
+      /* The recorder, last: it reads what the two calls above just left. */
+      capture_tick();
 
       if (casc_armed != 0u) {
         int32_t sp  = outer_speed();

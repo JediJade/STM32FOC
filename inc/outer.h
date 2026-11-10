@@ -43,6 +43,16 @@ void    outer_tick(uint16_t measured_angle);
 
 outer_mode outer_mode_get(void);
 int32_t outer_speed(void);          /* last measured speed */
+
+/*
+ * The speed and position gains, Q15, and the current the speed loop may ask
+ * for. Compile-time constants until a real motor made them something to be
+ * found rather than chosen. Changing them does not touch the integrator.
+ */
+void    outer_set_gains(int32_t speed_kp, int32_t speed_ki, int32_t iq_max);
+void    outer_get_gains(int32_t *speed_kp, int32_t *speed_ki, int32_t *iq_max);
+void    outer_set_pos_kp(int32_t kp);
+int32_t outer_pos_kp(void);
 int32_t outer_speed_ref(void);
 int32_t outer_iq_ref(void);
 uint32_t outer_cycles(void);        /* cost of the last 1 kHz update */

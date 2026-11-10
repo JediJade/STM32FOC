@@ -33,22 +33,38 @@
 #define LOOP_DECOUPLE_CA   20580   /* Q15, c/a = 1029/1638 = 0.628 */
 #define LOOP_BACK_EMF      6554    /* Q15, omega*lambda = 0.20     */
 
+/*
+ * The values in use. They start as the constants above, so a board that is
+ * never told otherwise behaves exactly as it did when they were #defines -
+ * including through the power-on self-tests, which run before any console.
+ */
+static int32_t  gain_kp  = LOOP_KP;
+static int32_t  gain_ki  = LOOP_KI;
+static int32_t  ff_cross = LOOP_DECOUPLE_CA;
+static int32_t  ff_emf   = LOOP_BACK_EMF;
+
 static pi_state pi_d;
 static pi_state pi_q;
 static uint16_t angle;
 static uint16_t offset;
 static int16_t  target_q;
+static int16_t  target_d;
+static foc_dq   v_cmd;
 static int      decouple;
 static loop_mode mode;
 static uint32_t plant_cycles;
 static foc_dq   last_dq;
+static foc_dq   last_vdq;
 
 void foc_loop_init(void)
 {
-  pi_init(&pi_d, LOOP_KP, LOOP_KI, LOOP_OUT_MAX);
-  pi_init(&pi_q, LOOP_KP, LOOP_KI, LOOP_OUT_MAX);
+  pi_init(&pi_d, gain_kp, gain_ki, LOOP_OUT_MAX);
+  pi_init(&pi_q, gain_kp, gain_ki, LOOP_OUT_MAX);
   angle    = 0u;
   target_q = 0;
+  target_d = 0;
+  v_cmd.d  = 0;
+  v_cmd.q  = 0;
   mode     = LOOP_MODE_IDLE;
   vmotor_reset();
 }
@@ -63,9 +79,51 @@ void foc_loop_set_target(int16_t iq_target)
   target_q = iq_target;
 }
 
+void foc_loop_set_target_d(int16_t id_target)
+{
+  target_d = id_target;
+}
+
+void foc_loop_set_voltage(int16_t vd, int16_t vq)
+{
+  v_cmd.d = vd;
+  v_cmd.q = vq;
+}
+
+void foc_loop_set_gains(int32_t kp, int32_t ki)
+{
+  gain_kp = kp;
+  gain_ki = ki;
+  pi_configure(&pi_d, kp, ki, LOOP_OUT_MAX);
+  pi_configure(&pi_q, kp, ki, LOOP_OUT_MAX);
+}
+
+void foc_loop_get_gains(int32_t *kp, int32_t *ki)
+{
+  *kp = gain_kp;
+  *ki = gain_ki;
+}
+
+void foc_loop_set_feedforward(int32_t cross, int32_t back_emf)
+{
+  ff_cross = cross;
+  ff_emf   = back_emf;
+}
+
+void foc_loop_get_feedforward(int32_t *cross, int32_t *back_emf)
+{
+  *cross    = ff_cross;
+  *back_emf = ff_emf;
+}
+
 void foc_loop_set_decouple(int on)
 {
   decouple = on;
+}
+
+int foc_loop_decouple(void)
+{
+  return decouple;
 }
 
 void foc_loop_set_offset(uint16_t off)
@@ -91,6 +149,11 @@ uint32_t foc_loop_plant_cycles(void)
 foc_dq foc_loop_last_dq(void)
 {
   return last_dq;
+}
+
+foc_dq foc_loop_last_vdq(void)
+{
+  return last_vdq;
 }
 
 loop_mode foc_loop_mode(void)
@@ -134,18 +197,20 @@ foc_dq foc_loop_step(void)
        trusted until it is done. */
     v_ab.alpha = LOOP_ALIGN_V;
     v_ab.beta  = 0;
+    last_vdq.d = 0;
+    last_vdq.q = 0;
     break;
 
   case LOOP_MODE_CURRENT: {
-    int32_t vd = pi_step(&pi_d, (int32_t)0 - (int32_t)i_dq.d);
+    int32_t vd = pi_step(&pi_d, (int32_t)target_d - (int32_t)i_dq.d);
     int32_t vq = pi_step(&pi_q, (int32_t)target_q - (int32_t)i_dq.q);
     foc_dq  v_dq;
 
     if (decouple != 0) {
       /* Hand the controllers the part of the plant that is predictable */
-      vd -= (int32_t)q15_mul((int16_t)i_dq.q, LOOP_DECOUPLE_CA);
-      vq += (int32_t)q15_mul((int16_t)i_dq.d, LOOP_DECOUPLE_CA);
-      vq += LOOP_BACK_EMF;
+      vd -= (int32_t)q15_mul((int16_t)i_dq.q, (int16_t)ff_cross);
+      vq += (int32_t)q15_mul((int16_t)i_dq.d, (int16_t)ff_cross);
+      vq += ff_emf;
     }
 
     if (vd >  LOOP_OUT_MAX) { vd =  LOOP_OUT_MAX; }
@@ -156,14 +221,24 @@ foc_dq foc_loop_step(void)
     v_dq.d = (int16_t)vd;
     v_dq.q = (int16_t)vq;
 
+    last_vdq = v_dq;
     v_ab = foc_inv_park(v_dq, angle);
     break;
   }
+
+  case LOOP_MODE_VOLTAGE:
+    /* The commanded voltage, straight through. The console has already
+       limited it; nothing here second-guesses the number. */
+    last_vdq = v_cmd;
+    v_ab = foc_inv_park(v_cmd, angle);
+    break;
 
   case LOOP_MODE_IDLE:
   default:
     v_ab.alpha = 0;
     v_ab.beta  = 0;
+    last_vdq.d = 0;
+    last_vdq.q = 0;
     break;
   }
 

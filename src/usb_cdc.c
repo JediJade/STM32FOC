@@ -75,14 +75,33 @@ static void ep_set_rx_status(uint8_t ep, uint16_t stat)
   EPR(ep) = (uint16_t)(v | USB_EP0R_CTR_RX | USB_EP0R_CTR_TX);
 }
 
+/*
+ * Clear one CTR bit and leave the other alone - which means writing 1 to the
+ * other, not writing back what was read.
+ *
+ * Both are rc_w0: writing 0 clears, writing 1 does nothing. These two used
+ * to write the other bit back as it was read. If that read said 0 and the
+ * transfer in the other direction finished before the write landed, the
+ * write cleared a CTR bit nobody had seen yet. For a lost CTR_RX that is
+ * the end of the endpoint: the hardware has already set it to NAK, the
+ * handler that would have taken the packet and let the application re-arm
+ * it never runs, and every later write from the host times out.
+ *
+ * It needs an OUT packet to complete inside the few cycles between the read
+ * and the write of an IN completion, so it wants traffic in both directions
+ * at once. A console answering one request at a time almost never does
+ * that; a host sending two requests back to back does it within seconds.
+ * Caught on the board: EP1R read 0x2021 - STAT_RX NAK, CTR_RX clear - with
+ * rx_len still 0.
+ */
 static void ep_clear_ctr_rx(uint8_t ep)
 {
-  EPR(ep) = (uint16_t)(EPR(ep) & EP_KEEP_MASK & ~USB_EP0R_CTR_RX);
+  EPR(ep) = (uint16_t)((EPR(ep) & EP_KEEP_MASK & ~USB_EP0R_CTR_RX) | USB_EP0R_CTR_TX);
 }
 
 static void ep_clear_ctr_tx(uint8_t ep)
 {
-  EPR(ep) = (uint16_t)(EPR(ep) & EP_KEEP_MASK & ~USB_EP0R_CTR_TX);
+  EPR(ep) = (uint16_t)((EPR(ep) & EP_KEEP_MASK & ~USB_EP0R_CTR_TX) | USB_EP0R_CTR_RX);
 }
 
 static uint16_t rx_blocks(uint16_t size)
@@ -647,8 +666,23 @@ uint16_t usb_cdc_write(const uint8_t *data, uint16_t len)
   if ((configured == 0U) || (tx_busy != 0U)) {
     return 0U;
   }
-  if (len > BULK_SIZE) {
-    len = BULK_SIZE;
+  /*
+   * One byte short of a full packet, always.
+   *
+   * A bulk transfer ends at a packet shorter than the endpoint size. A
+   * packet of exactly 64 bytes says "more follows", and the host holds it
+   * back until whatever comes next - which for a console answering one
+   * request at a time is the reply to the next request. The state line is
+   * 64 characters for some values (it was for "ang 54078  spd 0  id -20
+   * iq -1  iqref 1076  moe 0  fault none"), and then every answer arrived
+   * one request late: the board had sent it, DTOG_TX had toggled, and the
+   * host application saw nothing.
+   *
+   * The other cure is a zero-length packet after each full one. Never
+   * sending a full one needs no state and no second interrupt.
+   */
+  if (len > (BULK_SIZE - 1U)) {
+    len = BULK_SIZE - 1U;
   }
 
   tx_busy = 1U;

@@ -20,7 +20,8 @@
 typedef enum {
   LOOP_MODE_IDLE = 0,   /* zero volts on all three phases */
   LOOP_MODE_ALIGN,      /* a fixed field at electrical angle zero */
-  LOOP_MODE_CURRENT     /* closed current loop on i_d and i_q */
+  LOOP_MODE_CURRENT,    /* closed current loop on i_d and i_q */
+  LOOP_MODE_VOLTAGE     /* a fixed (v_d, v_q), no controller: identification */
 } loop_mode;
 
 /* The voltage used while aligning: enough to hold the rotor against friction,
@@ -30,8 +31,41 @@ typedef enum {
 void     foc_loop_init(void);
 void     foc_loop_set_mode(loop_mode mode);
 
-/* Target q-axis current in Q15; d axis is always driven to zero. */
+/* Target q-axis current in Q15. */
 void     foc_loop_set_target(int16_t iq_target);
+
+/*
+ * Target d-axis current in Q15, zero unless something asks otherwise.
+ *
+ * Current on the d axis makes no torque, which is what makes it useful: a
+ * known d current can be held while the rotor stays where it is, and the
+ * voltage it takes is the winding's resistance with nothing else mixed in.
+ */
+void     foc_loop_set_target_d(int16_t id_target);
+
+/*
+ * The voltage LOOP_MODE_VOLTAGE applies, in the rotor frame, Q15.
+ *
+ * No controller is involved, on purpose. A step of voltage on the d axis and
+ * a record of the current that follows is the winding's time constant - and
+ * a time constant measured through a PI controller is the controller's.
+ */
+void     foc_loop_set_voltage(int16_t vd, int16_t vq);
+
+/*
+ * The current controller's gains, Q15. Both axes share one pair.
+ *
+ * They were compile-time constants while the only plant was the model in
+ * vmotor.c. A real motor has its own resistance and inductance, and the
+ * gains that suit it have to be found on it and set without a rebuild.
+ * Changing them does not touch the integrators.
+ */
+void     foc_loop_set_gains(int32_t kp, int32_t ki);
+void     foc_loop_get_gains(int32_t *kp, int32_t *ki);
+
+/* The two feed-forward constants, Q15: cross-coupling and back-EMF. */
+void     foc_loop_set_feedforward(int32_t cross, int32_t back_emf);
+void     foc_loop_get_feedforward(int32_t *cross, int32_t *back_emf);
 
 /*
  * Feed-forward decoupling.
@@ -46,6 +80,7 @@ void     foc_loop_set_target(int16_t iq_target);
  * run, rather than trusting a before-and-after across two flashes.
  */
 void     foc_loop_set_decouple(int on);
+int      foc_loop_decouple(void);
 
 /* The sensor-to-rotor offset that align mode discovers. */
 void     foc_loop_set_offset(uint16_t offset);
@@ -58,6 +93,10 @@ uint16_t foc_loop_angle(void);
 
 /* The last (d, q) the loop measured, for telemetry. */
 foc_dq   foc_loop_last_dq(void);
+
+/* The last (v_d, v_q) the loop applied: the controllers' output plus the
+   feed-forward, after limiting. Zero in idle and during alignment. */
+foc_dq   foc_loop_last_vdq(void);
 loop_mode foc_loop_mode(void);
 
 /*

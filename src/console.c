@@ -7,6 +7,15 @@
 #include "tim1.h"
 #include "selftest.h"
 #include "safety.h"
+#include "capture.h"
+#include "stm32f103xb.h"
+
+/*
+ * What a host can ask this firmware for. 1 was the console as first written
+ * (it has no `ver`, and answers "? for help"); 2 added settable gains, the
+ * d-axis target, voltage mode, the recorder and the `x` line.
+ */
+#define CONSOLE_VERSION   2
 
 /* ------------------------------------------------------- formatting ----- */
 
@@ -157,6 +166,14 @@ static void print_help(void)
   line("  on         arm: enable the PWM outputs (refused unless idle)");
   line("  clear      clear a latched fault");
   line("  hang       stop refreshing the watchdog, on purpose");
+  line("  ver        console version and recorder size");
+  line("  x          applied voltage, loop modes, recorder state");
+  line("  get        list the settable parameters");
+  line("  set <p> <n>  set one of them");
+  line("  id <n>     d-axis current target (Q15), used in current mode");
+  line("  vd <n>     voltage mode: v_d = n, v_q = 0, no controller");
+  line("  cap <ch> <div>  arm the recorder: id iq vd vq spd ang");
+  line("  dump       print what the recorder holds");
 }
 
 static void print_state(void)
@@ -227,8 +244,228 @@ static void print_tests(void)
   emit(buf, (uint16_t)(p - buf));
 }
 
+/* ------------------------------------------------------ parameters ------ */
+
+/*
+ * Everything that was a tuning #define, by a short name.
+ *
+ * The limits are not opinions about what tunes well. They are what the
+ * arithmetic downstream can take: q15_mul() takes an int16, the speed
+ * loop's output is a current reference that has to stay inside the current
+ * loop's own limit, and a gain past these ranges is a typing mistake.
+ */
+typedef enum {
+  P_CKP = 0, P_CKI, P_CDEC, P_CCROSS, P_CEMF,
+  P_SKP, P_SKI, P_SIMAX, P_PKP,
+  P_COUNT
+} param_id;
+
+typedef struct {
+  const char *name;
+  int32_t     lo;
+  int32_t     hi;
+} param_def;
+
+static const param_def params[P_COUNT] = {
+  { "ckp",     0,  262144 },    /* current Kp, Q15: up to 8.0            */
+  { "cki",     0,   32767 },    /* current Ki, Q15 per 50 us period      */
+  { "cdec",    0,       1 },    /* feed-forward decoupling off / on      */
+  { "ccross",  0,   32767 },    /* cross-coupling feed-forward, Q15      */
+  { "cemf",    0,   32767 },    /* back-EMF feed-forward, Q15            */
+  { "skp",     0, 1048576 },    /* speed Kp, Q15: up to 32.0             */
+  { "ski",     0,  131072 },    /* speed Ki, Q15 per 1 ms tick           */
+  { "simax", 256,   29491 },    /* current the speed loop may ask for    */
+  { "pkp",     0,   32768 },    /* position Kp, Q15                      */
+};
+
+static int32_t param_get(param_id id)
+{
+  int32_t a = 0;
+  int32_t b = 0;
+  int32_t c = 0;
+
+  switch (id) {
+  case P_CKP:    foc_loop_get_gains(&a, &b);        return a;
+  case P_CKI:    foc_loop_get_gains(&a, &b);        return b;
+  case P_CDEC:   return (foc_loop_decouple() != 0) ? 1 : 0;
+  case P_CCROSS: foc_loop_get_feedforward(&a, &b);  return a;
+  case P_CEMF:   foc_loop_get_feedforward(&a, &b);  return b;
+  case P_SKP:    outer_get_gains(&a, &b, &c);       return a;
+  case P_SKI:    outer_get_gains(&a, &b, &c);       return b;
+  case P_SIMAX:  outer_get_gains(&a, &b, &c);       return c;
+  case P_PKP:    return outer_pos_kp();
+  default:       return 0;
+  }
+}
+
+static void param_set(param_id id, int32_t v)
+{
+  int32_t a = 0;
+  int32_t b = 0;
+  int32_t c = 0;
+
+  if (v < params[id].lo) { v = params[id].lo; }
+  if (v > params[id].hi) { v = params[id].hi; }
+
+  /* A gain is several words in a controller's state. The control interrupt
+     must not run between them and see half of the old with half of the new. */
+  __disable_irq();
+  switch (id) {
+  case P_CKP:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(v, b);        break;
+  case P_CKI:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(a, v);        break;
+  case P_CDEC:   foc_loop_set_decouple((int)v);                                      break;
+  case P_CCROSS: foc_loop_get_feedforward(&a, &b);  foc_loop_set_feedforward(v, b);  break;
+  case P_CEMF:   foc_loop_get_feedforward(&a, &b);  foc_loop_set_feedforward(a, v);  break;
+  case P_SKP:    outer_get_gains(&a, &b, &c);       outer_set_gains(v, b, c);        break;
+  case P_SKI:    outer_get_gains(&a, &b, &c);       outer_set_gains(a, v, c);        break;
+  case P_SIMAX:  outer_get_gains(&a, &b, &c);       outer_set_gains(a, b, v);        break;
+  case P_PKP:    outer_set_pos_kp(v);                                                break;
+  default:                                                                           break;
+  }
+  __enable_irq();
+}
+
+static void print_param(param_id id)
+{
+  char buf[40];
+  char *p = put_str(buf, "p ");
+
+  p = put_str(p, params[id].name);
+  *p++ = ' ';
+  p = put_int(p, param_get(id));
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+/* If s begins with word followed by a space or the end, the text after it. */
+static const char *after_word(const char *s, const char *word)
+{
+  while (*word != '\0') {
+    if (*s != *word) {
+      return 0;
+    }
+    s++;
+    word++;
+  }
+  if ((*s != ' ') && (*s != '\0')) {
+    return 0;
+  }
+  while (*s == ' ') {
+    s++;
+  }
+  return s;
+}
+
+static void cmd_set(const char *args)
+{
+  int i;
+
+  for (i = 0; i < (int)P_COUNT; i++) {
+    const char *value = after_word(args, params[i].name);
+
+    if ((value != 0) && (*value != '\0')) {
+      param_set((param_id)i, parse_int(value));
+      print_param((param_id)i);
+      return;
+    }
+  }
+  line("? unknown parameter, or no value");
+}
+
+/* -------------------------------------------------------- recorder ------ */
+
+static const char *const cap_names[CAPTURE_CHANNELS] = {
+  "id", "iq", "vd", "vq", "spd", "ang"
+};
+
+static void cmd_cap(const char *args)
+{
+  int i;
+
+  for (i = 0; i < (int)CAPTURE_CHANNELS; i++) {
+    const char *rest = after_word(args, cap_names[i]);
+
+    if (rest != 0) {
+      int32_t div = (*rest != '\0') ? parse_int(rest) : 1;
+
+      if (div < 1)    { div = 1; }
+      if (div > 2000) { div = 2000; }
+      capture_arm((capture_channel)i, (uint16_t)div);
+      line("cap armed");
+      return;
+    }
+  }
+  line("? cap <id|iq|vd|vq|spd|ang> <divider>");
+}
+
+static void cmd_dump(void)
+{
+  char buf[80];
+  char *p;
+  uint16_t n = capture_count();
+  uint16_t i = 0U;
+
+  p = put_str(buf, "cap ");
+  p = put_str(p, cap_names[capture_which()]);
+  p = put_str(p, " div ");
+  p = put_int(p, (int32_t)capture_divider());
+  p = put_str(p, " n ");
+  p = put_int(p, (int32_t)n);
+  p = put_str(p, " state ");
+  p = put_int(p, (int32_t)capture_status());
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+
+  /* Eight to a line: a line is at most 2 + 8 * 7 characters, well inside
+     the buffer, and thirty-two lines is a reply a host can frame. */
+  while (i < n) {
+    uint16_t k;
+
+    p = put_str(buf, "d");
+    for (k = 0U; (k < 8U) && (i < n); k++, i++) {
+      *p++ = ' ';
+      p = put_int(p, (int32_t)capture_sample(i));
+    }
+    *p++ = '\r';
+    *p++ = '\n';
+    emit(buf, (uint16_t)(p - buf));
+
+    /* emit() refreshes the watchdog only while it is kept waiting. A host
+       that drains fast keeps it from ever waiting, so refresh here too. */
+    safety_watchdog_refresh();
+  }
+  line("cap end");
+}
+
+static void print_extra(void)
+{
+  char buf[80];
+  char *p;
+  foc_dq v = foc_loop_last_vdq();
+
+  p = put_str(buf, "x vd ");
+  p = put_int(p, v.d);
+  p = put_str(p, "  vq ");
+  p = put_int(p, v.q);
+  p = put_str(p, "  loop ");
+  p = put_int(p, (int32_t)foc_loop_mode());
+  p = put_str(p, "  outer ");
+  p = put_int(p, (int32_t)outer_mode_get());
+  p = put_str(p, "  cap ");
+  p = put_int(p, (int32_t)capture_status());
+  p = put_str(p, "  n ");
+  p = put_int(p, (int32_t)capture_count());
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
 static void dispatch(void)
 {
+  const char *arg;
+
   if (cmd_len == 0U) {
     return;
   }
@@ -243,25 +480,33 @@ static void dispatch(void)
 
     if (v > 16384) { v = 16384; }
     if (v < -16384) { v = -16384; }
+    __disable_irq();
     outer_set_mode(OUTER_MODE_OFF);
     vmotor_set_mech(VM_MECH_FREE, 0);
     foc_loop_set_mode(LOOP_MODE_CURRENT);
     foc_loop_set_target((int16_t)v);
+    capture_trigger();
+    __enable_irq();
     line("current mode");
   } else if (starts_with(cmd, "spd ")) {
     int32_t v = parse_int(&cmd[4]);
 
     if (v >  OUTER_SPEED_MAX) { v =  OUTER_SPEED_MAX; }
     if (v < -OUTER_SPEED_MAX) { v = -OUTER_SPEED_MAX; }
+    __disable_irq();
     vmotor_set_mech(VM_MECH_FREE, 0);
+    foc_loop_set_target_d(0);
     foc_loop_set_mode(LOOP_MODE_CURRENT);
     outer_set_mode(OUTER_MODE_SPEED);
     outer_set_speed_ref(v);
+    capture_trigger();
+    __enable_irq();
     line("speed mode");
   } else if (starts_with(cmd, "pos ")) {
     int32_t v = parse_int(&cmd[4]);
 
     vmotor_set_mech(VM_MECH_FREE, 0);
+    foc_loop_set_target_d(0);
     foc_loop_set_mode(LOOP_MODE_CURRENT);
     outer_set_mode(OUTER_MODE_POSITION);
     outer_set_position_ref((uint16_t)(foc_loop_angle() + (uint16_t)v));
@@ -274,6 +519,8 @@ static void dispatch(void)
     outer_set_mode(OUTER_MODE_OFF);
     foc_loop_set_mode(LOOP_MODE_IDLE);
     foc_loop_set_target(0);
+    foc_loop_set_target_d(0);
+    foc_loop_set_voltage(0, 0);
     safety_disarm();
     line("idle, outputs off");
   } else if (starts_with(cmd, "on")) {
@@ -297,6 +544,57 @@ static void dispatch(void)
     for (;;) {
       /* deliberately not refreshing */
     }
+  } else if ((arg = after_word(cmd, "set")) != 0) {
+    cmd_set(arg);
+  } else if (after_word(cmd, "get") != 0) {
+    int i;
+
+    for (i = 0; i < (int)P_COUNT; i++) {
+      print_param((param_id)i);
+    }
+    line("get end");
+  } else if (after_word(cmd, "ver") != 0) {
+    char buf[48];
+    char *p = put_str(buf, "fw ");
+
+    p = put_int(p, CONSOLE_VERSION);
+    p = put_str(p, " cap ");
+    p = put_int(p, (int32_t)CAPTURE_LEN);
+    *p++ = '\r';
+    *p++ = '\n';
+    emit(buf, (uint16_t)(p - buf));
+  } else if ((arg = after_word(cmd, "id")) != 0) {
+    int32_t v = parse_int(arg);
+
+    if (v > 16384) { v = 16384; }
+    if (v < -16384) { v = -16384; }
+    __disable_irq();
+    foc_loop_set_target_d((int16_t)v);
+    capture_trigger();
+    __enable_irq();
+    line("id target");
+  } else if ((arg = after_word(cmd, "vd")) != 0) {
+    int32_t v = parse_int(arg);
+
+    /* Half scale at most. This is an open-loop voltage: on a real winding
+       the current it makes is v / R with nothing watching, so the ceiling
+       is here, in the one place the number comes in. */
+    if (v > 16384) { v = 16384; }
+    if (v < -16384) { v = -16384; }
+    __disable_irq();
+    outer_set_mode(OUTER_MODE_OFF);
+    vmotor_set_mech(VM_MECH_FREE, 0);
+    foc_loop_set_voltage((int16_t)v, 0);
+    foc_loop_set_mode(LOOP_MODE_VOLTAGE);
+    capture_trigger();
+    __enable_irq();
+    line("voltage mode");
+  } else if ((arg = after_word(cmd, "cap")) != 0) {
+    cmd_cap(arg);
+  } else if (after_word(cmd, "dump") != 0) {
+    cmd_dump();
+  } else if (cmd[0] == 'x') {
+    print_extra();
   } else if (cmd[0] == 's') {
     print_state();
   } else if (cmd[0] == 't') {

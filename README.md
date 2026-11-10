@@ -161,6 +161,61 @@ clear      clear a latched fault
 hang       stop refreshing the watchdog, on purpose
 ```
 
+Console version 2 (2026-11-10) adds the commands a host needs to set the
+gains and to measure the plant, without a rebuild:
+
+```
+ver             fw 2 cap 256 - the original console answers "? for help"
+x               applied v_d and v_q, loop mode, outer mode, recorder state
+get             every settable parameter, as "p <name> <value>", then "get end"
+set <p> <n>     set one; the reply is the value as stored, after limiting
+id <n>          d-axis current target in Q15 (no torque: the rotor stays put)
+vd <n>          voltage mode: v_d = n, v_q = 0, no controller, at most half scale
+cap <ch> <div>  arm the recorder on id, iq, vd, vq, spd or ang; 256 samples,
+                one every <div> control periods, starting with the next target
+dump            the record: a header, lines of "d" and eight values, "cap end"
+```
+
+| parameter | what it is | built-in | range |
+| --- | --- | --- | --- |
+| `ckp` | current Kp, Q15 | 6000 | 0 - 262144 |
+| `cki` | current Ki, Q15 per 50 us period | 900 | 0 - 32767 |
+| `cdec` | feed-forward decoupling | 1 | 0 - 1 |
+| `ccross` | cross-coupling feed-forward, Q15 | 20580 | 0 - 32767 |
+| `cemf` | back-EMF feed-forward, Q15 | 6554 | 0 - 32767 |
+| `skp` | speed Kp, Q15 | 32768 | 0 - 1048576 |
+| `ski` | speed Ki, Q15 per 1 ms update | 6144 | 0 - 131072 |
+| `simax` | current the speed loop may ask for | 16384 | 256 - 29491 |
+| `pkp` | position Kp, Q15 | 328 | 0 - 32768 |
+
+They live in RAM: a reset puts the built-in values back. With the built-in
+values the loops compute exactly what they did when these were `#define`s.
+`studio/` is the host that uses all of this - a parameters page and an auto
+tune that measures the plant through `vd`, `id` and `cap` and then sets the
+four gains.
+
+Three things changed underneath, each found on the board while adding the
+above:
+
+- **`spd` is live in every mode.** Speed was measured only while a speed or
+  position loop was closed, so in idle and in current mode the state line
+  kept its last value: 2640 for a rotor that had stopped.
+- **A completed USB transfer could be lost.** Clearing `CTR_TX` wrote
+  `CTR_RX` back as it had been read, so an OUT packet finishing in between
+  was cleared unseen, and the endpoint stayed at NAK for good. Two requests
+  sent back to back did it in three seconds (EP1R read 0x2021, `rx_len` 0).
+  After the fix: 106,704 overlapping requests, none unanswered.
+- **A reply of exactly 64 bytes arrived one request late.** A full-size
+  packet does not end a bulk transfer, so the host held it until the next
+  one. The state line is 64 bytes for some values. Packets are now at most
+  63 bytes: 615 such replies, all within 3 ms.
+
+Not changed: `align` still ends in a watchdog reset (it blocks for 300 ms in
+`delay_ms()`, which does not refresh the 100 ms watchdog), and the current
+loop self-test's settling count still depends on where the control interrupt
+lands among its set-up statements (83 or 85 periods from the same
+arithmetic, shown by adding nothing but a delay).
+
 Measured over the port, with the plant still virtual:
 
 ```
