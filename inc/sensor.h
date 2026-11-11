@@ -87,6 +87,12 @@ int      sensor_cal_running(void);
 int      sensor_cal_result(void);
 
 int      sensor_hall_valid(void);
+
+/* The learned table, for store.c: the edges and the ring, eight entries
+   each. Get returns 1 if the table is valid; set returns 0 if it was taken,
+   and wants the control interrupt held off. */
+int      sensor_hall_table_get(uint16_t *edge, uint8_t *next);
+int      sensor_hall_table_set(const uint16_t *edge, const uint8_t *next);
 int32_t  sensor_hall_edge(int code);      /* -1 for a state that never occurs */
 uint32_t sensor_hall_errors(void);
 void     sensor_clear_errors(void);

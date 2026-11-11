@@ -70,6 +70,11 @@ running.
 | `src/selftest.c` | the eight self-tests **and the ADC interrupt** |
 | `src/usb_cdc.c` | USB CDC-ACM device, on the registers |
 | `src/console.c` | line parser, commands, telemetry |
+| `src/drive.c` | v0.3: throttle, brake, field weakening, and the parameter array they all use |
+| `src/sensor.c` | v0.3: the angle from Hall sensors or from an observer, and Hall calibration |
+| `src/oneline.c` | v0.3: the one-line (SIF) dashboard signal |
+| `src/canbus.c` | v0.3: bxCAN on the registers, its protocol, its loopback test |
+| `src/store.c` | v0.4: the parameters and the Hall table in the last flash page |
 | `src/safety.c` | the gate on MOE: arming rules, latched faults, watchdog |
 | `cmsis/` | ST register headers only - no HAL, no middleware, no CMSIS `.c` |
 | `read-selftest.py` | host-side reader; parses the struct out of the header |

@@ -192,8 +192,9 @@ dump            the record: a header, lines of "d" and eight values, "cap end"
 | `simax` | current the speed loop may ask for | 16384 | 256 - 29491 |
 | `pkp` | position Kp, Q15 | 328 | 0 - 32768 |
 
-They live in RAM: a reset puts the built-in values back. With the built-in
-values the loops compute exactly what they did when these were `#define`s.
+They live in RAM until `save` writes them to flash - console version 4,
+below. With the built-in values the loops compute exactly what they did when
+these were `#define`s.
 `studio/` is the host that uses all of this - a parameters page and an auto
 tune that measures the plant through `vd`, `id` and `cap` and then sets the
 four gains.
@@ -400,8 +401,6 @@ and none was fitted: on the bench every status frame was dropped unsent.
 
 - No real throttle, brake, Hall sensor, dashboard or transceiver has been
   connected. `hsrc 1` and `insrc 1` read the pins; nothing has driven them.
-- The parameters still go back to the built-in values at reset - the Hall
-  table too, so calibration is per power-up.
 - With Hall sensors the speed is as old as the last sector. On the light
   first motor with uneven (3144-like) sectors the speed loop hunts below
   about 1500 units/ms; on the second it holds 1000 and hunts at 300.
@@ -413,6 +412,75 @@ and none was fitted: on the bench every status frame was dropped unsent.
 - No bus voltage is measured, so the dashboard's battery byte is zero and
   regeneration has nothing watching where the energy goes.
 - `align` still ends in a watchdog reset.
+
+## Version 0.3: the settings the board keeps (console version 4)
+
+Everything above that can be set was lost at reset. A board that had been
+tuned, had its throttle ends measured and its Hall edges learned came back
+from a power cycle as a board that had had none of it done. On a bench that
+is a nuisance; in a vehicle it is the feature missing, because nobody
+calibrates a throttle at every switch-on.
+
+```
+save       write the parameters and the Hall table to flash
+load       put back what is written there
+sto        sto state <w> boot <w> console N p N hall N
+sto clear  erase the page
+```
+
+`state` is what the page holds now and `boot` is what happened to it at
+start-up - each one word: `ok`, `empty`, `damaged`, `version`, `busy`,
+`error`. `save` and `load` answer `save ok` or `save refused: <why>`.
+
+One 1 KB page, the last in the device (`0x0800FC00`), holds one record: the
+33 parameters as the console numbers them, the Hall table, and a checksum.
+`linker.ld` ends the code region one page short of it, so a build that grew
+into the page would fail to link rather than erase a piece of itself on the
+first save. `main()` loads the record before the watchdog starts, so the
+console is already answering as the board that was put away.
+
+Four things worth stating.
+
+**It is refused while anything is being driven.** Erasing a page stalls
+every instruction fetch from flash for tens of milliseconds, which means
+the control interrupt does not run for that long. With the outputs live
+that is a motor commanded by whatever the duty registers happen to hold, so
+`store_save()` asks `drive_idle()` and `safety_armed()` first and the
+watchdog is fed from inside the wait loop.
+
+**The record carries the console version, and a different one is refused.**
+The parameters are stored by number, so a record written by a firmware with
+a different parameter list would set the wrong things. `sto` reports
+`version` and the board stays on its built-in values rather than being
+quietly wrong.
+
+**The Hall table goes back before the parameters.** `sens 1` is refused
+while no table has been learned - rightly, because an angle from an
+unlearned table is a wrong angle. Restoring the parameters first therefore
+threw the sensor selection away without a word: the board came up on the
+encoder having been saved on its Hall sensors. The check caught it, the
+order fixed it, and the order is now stated in `store_load()` with the
+reason.
+
+**A sum, not a CRC.** What it has to catch is a record whose write was cut
+off - a power cut between the erase and the last halfword. An erased page
+reads `0xFFFF` everywhere, so a truncated record differs in whole halfwords,
+which a rotating sum catches as surely as a CRC in a tenth of the code.
+
+`studio/checks/store_flash.py COM13 --hall` is the evidence, and it does not
+stop at `save` answering `ok`: it marks six parameters with values no
+default has, saves, makes the board reset through the watchdog (`hang` - the
+only reset this console can ask for, and the one that cuts the firmware off
+without a chance to write anything on the way down), waits for the port to
+come back and reads them out again. On the board, 2026-11-11: 23 of 23,
+including the six learned Hall edges identical before and after the reset
+and the board coming back up on its Hall sensors. The emulator answers the
+same 23, with a file in place of the page.
+
+What is still true: the page is erased and rewritten whole on every `save`,
+which is about 10,000 saves on this part and not a thing anybody does in a
+loop; and `openocd program` leaves the page alone, so a reflash of the
+firmware keeps the settings.
 
 ## The gate on MOE
 
@@ -793,7 +861,7 @@ no debugger is attached, so it costs nothing in the field. It turned up while
 testing the monitor: the first thing the new window reported was
 `fault watchdog reset`, on a board that had not hung.
 
-### Known next steps### Known next steps
+### Known next steps
 
 - The arming rules and the watchdog are verified by the console procedure
   above rather than by a boot-time self-test: a watchdog that resets the chip

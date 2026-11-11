@@ -56,7 +56,7 @@ import vehicle
 from focsim import (AutoTune, BY_KEY, Drive, GROUPS, MODE_SPEED, PARAMS,
                     Param, selfcheck)
 
-VERSION = "3.0"
+VERSION = "3.1"
 APP_ID = "unitymbed.stm32foc.studio"
 ICON_FILE = "unitymbed.ico"
 
@@ -889,13 +889,20 @@ class ParamPage(Page):
             cv.tag_bind(tag, "<ButtonPress-1>", lambda e, g=gno: self.pick_group(g))
             self.g_items.append((gno, bar, label, name, count))
 
-        for i, (label, fn) in enumerate((
-                ("restore this default", self._default),
-                ("reset this group", self._reset_group),
-                ("reset everything", self._reset_all),
-                ("save to a file", self._save),
-                ("load from a file", self._load))):
-            B.RoundButton(cv, X0 + 14, 520 + i * 44, 28, B.DARK2, fn,
+        buttons = [("restore this default", self._default),
+                   ("reset this group", self._reset_group),
+                   ("reset everything", self._reset_all),
+                   ("save to a file", self._save),
+                   ("load from a file", self._load)]
+        # A file is the host's copy; the flash page is the board's own, and
+        # it is the one that decides what the board comes up as. Only a
+        # board that can keep them gets the buttons.
+        if self.ps.kind == "board":
+            buttons += [("keep these in the board", self._store_save),
+                        ("take the board's own set", self._store_load)]
+        step = 44 if len(buttons) <= 5 else 38
+        for i, (label, fn) in enumerate(buttons):
+            B.RoundButton(cv, X0 + 14, 520 + i * step, 28, B.DARK2, fn,
                           label=label, label_side="e", label_size=13,
                           label_color=B.INK2)
 
@@ -1068,6 +1075,49 @@ class ParamPage(Page):
         if path:
             self.msg = self.load_from(path)
 
+
+    def _store_save(self):
+        link = self.app.board
+        if link is None:
+            self.msg = "connect to a board first."
+        elif not link.store_supported:
+            self.msg = ("this firmware cannot keep its settings. "
+                        "console 4 added save and load.")
+        else:
+            link.store_save()
+            self.msg = "writing the flash page..."
+
+    def _store_load(self):
+        link = self.app.board
+        if link is None:
+            self.msg = "connect to a board first."
+        elif not link.store_supported:
+            self.msg = ("this firmware cannot keep its settings. "
+                        "console 4 added save and load.")
+        else:
+            link.store_load()
+            self.msg = "reading the flash page..."
+
+    def _store_msg(self):
+        """What the board last answered about its flash page, in words."""
+        link = self.app.board
+        if link is None or not link.store_supported:
+            return None
+        reply = link.store_reply
+        if reply is None:
+            return None
+        what = reply.split()[0]
+        if not reply.endswith(" ok"):
+            return reply                    # it says why itself
+        st = link.store or {}
+        if what == "save":
+            n = st.get("params", 0)
+            hall = " and the hall table" if st.get("hall") else ""
+            return (f"kept in the board: {n} parameters{hall}. "
+                    "it comes up on these after a power cycle.")
+        if what == "load":
+            return "the board's own set is back."
+        return "the flash page is erased. the board comes up on its defaults."
     # ---- drawing
 
     def update(self):
@@ -1126,6 +1176,12 @@ class ParamPage(Page):
         note = ps.note
         if app.board is not None and ps.kind == "sim":
             note = NOTE_PARAMS
+        # A flash save or load is answered by the board, a moment later and
+        # on the reader thread; the "..." stands until the answer arrives.
+        if self.msg.endswith("flash page..."):
+            answered = self._store_msg()
+            if answered:
+                self.msg = answered
         self.set(self.e_msg, self.msg or note, B.ORANGE if self.msg else B.INK3)
         if self._entry_for != (q.key, value) and app.focus_get() is not self.entry:
             self._entry_for = (q.key, value)
@@ -1338,6 +1394,18 @@ class BoardPage(Page):
 
     # ---- actions
 
+    @staticmethod
+    def _flash_words(link):
+        """What the board's own settings page holds, in a few words."""
+        st = link.store
+        hall = " and the hall table" if st.get("hall") else ""
+        return {
+            "ok": f"{st.get('params', 0)} parameters{hall} stored",
+            "empty": "nothing stored; it comes up on its defaults",
+            "version": "a record another console version wrote; not used",
+            "damaged": "a half-written record; not used",
+        }.get(st.get("state"), st.get("state", "?"))
+
     def rescan(self):
         self.ports = boardlink.list_ports()[:self.PORT_ROWS]
         names = [p for p, _k in self.ports]
@@ -1417,6 +1485,8 @@ class BoardPage(Page):
                       f"{link.latency_ms:.1f} ms to answer.\n"
                       f"{console}\n"
                       f"loop: {link.mode or 'finding out'}"
+                      + (f"\nflash: {self._flash_words(link)}"
+                         if link.store else "")
                       + (f"\n{link.notice}" if link.notice else ""))
         self.set(self.t_status, status)
 

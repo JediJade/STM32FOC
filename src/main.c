@@ -31,6 +31,7 @@
 #include "canbus.h"
 #include "drive.h"
 #include "sensor.h"
+#include "store.h"
 
 #define LED_PIN   13U     /* PC13, active low */
 
@@ -238,6 +239,16 @@ int main(void)
   sensor_init();
   drive_init();
   console_init();
+
+  /*
+   * The stored settings, if there are any, before the watchdog starts and
+   * before a host can connect: a board that was tuned and had its throttle
+   * ends measured comes back as that board, and `sto` says what happened.
+   * A record this firmware cannot use is left alone, not overwritten - the
+   * built-in defaults are already in place, so refusing it costs nothing
+   * and keeps whatever a different build may want to read.
+   */
+  (void)store_boot();
 
   /*
    * The watchdog starts only now. The self-tests spend seconds inside

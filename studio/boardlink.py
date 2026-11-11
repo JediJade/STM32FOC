@@ -26,7 +26,7 @@ Units are the firmware's own, converted only where the conversion is exact:
              the firmware yet, so there is no honest conversion to amps and
              none is attempted.
 
-There are two consoles in the field, and `ver` tells them apart:
+There are four consoles in the field, and `ver` tells them apart:
 
     1   the console as first written. It has no `ver` and answers
         "? for help". Its gains are compile-time constants, so there is
@@ -49,6 +49,14 @@ There are two consoles in the field, and `ver` tells them apart:
           can  /  can on   CAN state  /  change over to CAN: the port goes
                            away, and comes back when the board returns to USB
         and twenty-four more parameters, and four more recorder channels.
+
+    4   adds the settings kept in the board:
+          save             write the parameters and the Hall table to flash
+          load             put back what was written
+          sto              sto state <w> boot <w> console N p N hall N
+          sto clear        erase the page
+        `state` is what the page holds and `boot` is what happened to it at
+        start-up, each one word: ok, empty, damaged, version, busy, error.
 
 With console 2 and later the loop mode is read from `x` instead of guessed,
 and `spd` is live in every mode, so the two workarounds below apply to
@@ -290,6 +298,8 @@ VEHICLE = re.compile(r"^v ((?:\w+ -?\d+ ?)+)$")
 HALL = re.compile(r"^hall ok (\d) err (\d+) e((?: -?\d+){8})$")
 CAN = re.compile(r"^can test (\d+) mode (\d+) id (\d+) br (\d+) rx (\d+) tx (\d+) drop (\d+)")
 OLF = re.compile(r"^olf((?: [0-9a-f]{2}){12})$")
+STORE = re.compile(r"^sto state (\w+) boot (\w+) console (-?\d+) "
+                   r"p (-?\d+) hall (-?\d+)$")
 VERSION = re.compile(r"^fw (\d+) cap (\d+)")
 PARAM = re.compile(r"^p (\w+) (-?\d+)$")
 DUMP = re.compile(r"^cap (\w+) div (\d+) n (\d+) state (\d+)$")
@@ -327,6 +337,8 @@ class BoardLink:
         self.hall_serial = 0
         self.can = None                     # the last `can` line, as a dict
         self.ol_frame = None                # the last `olf` line, 12 bytes
+        self.store = None                   # the last `sto` line, as a dict
+        self.store_reply = None             # what `save` / `load` answered
         self.away = False                   # `can on` was sent: expect to lose the port
         self._dump = None
         self._polls = 0
@@ -421,6 +433,23 @@ class BoardLink:
         speed shown is worked out from the angle."""
         return ((self.fw or 0) >= 2 or
                 self.mode in ("speed", "position", "running"))
+
+    @property
+    def store_supported(self):
+        """True when this board can keep its settings: console 4 and up."""
+        return (self.fw or 0) >= 4
+
+    def store_save(self):
+        self.store_reply = None
+        self.send("save")
+
+    def store_load(self):
+        self.store_reply = None
+        self.send("load")
+
+    def store_clear(self):
+        self.store_reply = None
+        self.send("sto clear")
 
     def set_param(self, name, value):
         """Ask the board to store a parameter. The reply updates params."""
@@ -587,6 +616,8 @@ class BoardLink:
             if self.fw >= 3:
                 self.send("hall")
                 self.send("can")
+            if self.fw >= 4:
+                self.send("sto")
             return False
         m = HALL.match(line)
         if m:
@@ -602,6 +633,20 @@ class BoardLink:
         m = OLF.match(line)
         if m:
             self.ol_frame = [int(v, 16) for v in m.group(1).split()]
+            return False
+        m = STORE.match(line)
+        if m:
+            self.store = dict(state=m.group(1), boot=m.group(2),
+                              console=int(m.group(3)), params=int(m.group(4)),
+                              hall=int(m.group(5)))
+            return False
+        if line.startswith(("save ", "load ", "sto clear ")):
+            self.store_reply = line
+            self.send("sto")            # whatever it did, re-read the page
+            if line.endswith(" ok") and line.startswith("load"):
+                # the board's own values have just changed under us
+                self.send("get")
+                self.send("hall")
             return False
         if line == "? for help" and self.fw is None:
             self.fw = 1

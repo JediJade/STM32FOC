@@ -41,10 +41,13 @@ python foc.py --selftest out.txt run the simulator's 16 checks, write the result
 python foc.py --shots pictures   save a picture of every page
 python foc.py --shots pictures --port COM13   ... and of the board pages too
 python focsim.py                 the simulator's 16 checks, printed
-python fwsim.py                  the firmware model's 40 checks, printed
+python fwsim.py                  the firmware model's 48 checks, printed
 python protocols.py              the one-line and CAN formats' 5 checks
 python checks\v3_features.py COM13 --can
                                  console version 3 on a board, 33 checks
+python checks\store_flash.py COM13 --hall
+                                 the settings kept in flash, across a reset
+                                 the board makes itself: 23 checks
 ```
 
 `build-exe.cmd` makes `dist\FOC.exe` with PyInstaller: one file, about
@@ -84,8 +87,27 @@ How it talks to the firmware:
 ![auto tune on the board](docs/board-auto-tune.png)
 
 The parameters page edits the gains in the firmware's memory with `set`, and
-shows what the board says it stored. They are in RAM: **a reset puts the
-built-in values back.** The firmware has nowhere to store them yet.
+shows what the board says it stored. They are in RAM until they are written
+to the board's own flash page, which is what the two extra buttons on this
+page do when the source is a board:
+
+| button | what it sends | what it means |
+| --- | --- | --- |
+| keep these in the board | `save` | the board comes up on these after a power cycle |
+| take the board's own set | `load` | put back what is in the page, discarding what is on screen |
+
+![the parameters page on a board that keeps its settings](docs/board-store.png)
+
+Both are refused by the firmware while anything is being driven, and the
+page prints what came back - `33 parameters and the hall table` when it
+worked, the firmware's own sentence when it did not. The board page says
+what the page holds (`flash: 33 parameters stored`, or `nothing stored; it
+comes up on its defaults`), and `sto clear` typed in its console box erases
+it. Console version 4 and later only; against an older board the buttons
+say so.
+
+The file buttons above them are a different thing: a `.json` on this PC, for
+keeping a set that no board is holding.
 
 Auto tune (`boardtune.py`) needs nothing the board does not report, and
 reads nothing from `vmotor.c`:
@@ -209,12 +231,12 @@ Identification lands within 1 % of the real motor on all four quantities.
 | `focsim.py` | simulated motor, drive, auto tune, and its self-check - no UI |
 | `boardlink.py` | serial port, the 100 Hz polling thread, the firmware's line formats - no UI |
 | `boardtune.py` | auto tune for the board, in the firmware's units - no UI |
-| `fwsim.py` | the firmware's control arithmetic and console in Python: a stand-in for a board, and its self-check |
+| `fwsim.py` | the firmware's control arithmetic and console in Python: a stand-in for a board, and its self-check. Its saved settings are a file in the temp directory, because nothing inside one process can stand in for a page that outlives the power |
 | `vehicle.py` | the vehicle page |
 | `protocols.py` | the one-line frame and the CAN frames: build, decode, check - no UI |
 | `braun.py` | drawing kit: round buttons, sliders, dial, dark screens, all anti-aliased with Pillow |
 | `build-exe.cmd` | builds `dist\FOC.exe` |
-| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model) |
+| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model), `store_flash.py` (the settings kept in flash, proved across a reset the board makes itself with `hang`) |
 
 `fwsim.py` is a test double, not evidence. On the same voltage step its
 256 recorded samples differ from the board's by at most 2 counts; on a speed

@@ -2,7 +2,7 @@
 The STM32FOC firmware's control arithmetic and console, in Python.
 
 This is a stand-in for the board, for when there is none on the desk: it
-answers the console the way console.c (version 3) does, and behind the
+answers the console the way console.c (version 4) does, and behind the
 console it runs the same integer arithmetic as pi.c, loop.c, outer.c,
 vmotor.c, sensor.c, drive.c, oneline.c and capture.c, one 50 us period at a
 time, in real time.
@@ -21,11 +21,21 @@ run, so `t` reports a board on which everything passed. There is no CAN
 controller either: `can on` makes this port fall silent for as long as the
 board would be away, and nothing more.
 
+The saved settings are a file, not a page of flash: STORE_PATH, in the
+system temp directory. The board keeps its record across a power cycle, and
+nothing inside one process can stand in for that, so the record has to
+outlive the process the way the page outlives the power. A new FwSim() is a
+boot: it reads the file and applies what is in it, exactly as main() does.
+
 It is a test double, not evidence. A result from here says the host side and
 the arithmetic agree with each other; only the board says they are right.
 """
 
+import io
+import json
 import math
+import os
+import tempfile
 import time
 
 import protocols
@@ -34,7 +44,10 @@ OUT_MAX = 29491
 SPEED_MAX = 6560
 CAPTURE_LEN = 256
 OUTER_DIVIDER = 20
-CONSOLE_VERSION = 3
+CONSOLE_VERSION = 4
+
+# Where the emulator keeps what the board keeps in its last flash page.
+STORE_PATH = os.path.join(tempfile.gettempdir(), "fwsim-store.json")
 
 # The virtual motor's constants: a, ke, accel, friction, load. Preset 0 is the
 # gimbal motor the firmware was built around; preset 1 is shaped like a hub
@@ -284,6 +297,94 @@ class FwSim:
         self._wall = time.perf_counter()
         self.closed = False
         self.away_until = 0.0
+        # store: the page, read the way main() reads it, before anything
+        # else can touch the parameters
+        self.store_boot = self._store_load()
+
+    # ------------------------------------------------------------ store ---
+
+    def _store_read(self):
+        """The record, or None. A file that is not a record reads as none."""
+        try:
+            with io.open(STORE_PATH, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        return rec if isinstance(rec, dict) and "console" in rec else None
+
+    def _store_state(self, rec=None):
+        """The word the firmware's `sto state` reports."""
+        rec = self._store_read() if rec is None else rec
+        if rec is None:
+            return "empty"
+        if rec.get("console") != CONSOLE_VERSION:
+            return "version"
+        if len(rec.get("params", {})) != len(PARAMS):
+            return "damaged"
+        return "ok"
+
+    def _store_load(self):
+        rec = self._store_read()
+        state = self._store_state(rec)
+        if state != "ok":
+            return state
+        # The table before the parameters: `sens 1` is refused while no
+        # table has been learned, which is how the board loses its sensor
+        # selection if the order is the other way round.
+        hall = rec.get("hall")
+        if hall:
+            self.h_edge = list(hall["edge"])
+            self.h_next = list(hall["next"])
+            self.h_wid = [(self.h_edge[self.h_next[c]] - self.h_edge[c]) & 0xFFFF
+                          if self.h_next[c] else 0 for c in range(8)]
+            self.h_valid = True
+            self.h_err = 0
+        for name, value in rec["params"].items():
+            if name in PARAM_INDEX:
+                self._set(name, value)
+        return "ok"
+
+    def _store_save(self):
+        if not self._idle() or self.moe:
+            return "busy"
+        rec = {
+            "console": CONSOLE_VERSION,
+            "params": {name: self.p[name] for name, *_ in PARAMS},
+            "hall": ({"edge": list(self.h_edge),
+                      "next": [self.h_next[c] if self.h_wid[c] else 0
+                               for c in range(8)]}
+                     if self.h_valid else None),
+        }
+        try:
+            with io.open(STORE_PATH, "w", encoding="utf-8") as fh:
+                json.dump(rec, fh)
+        except OSError:
+            return "error"
+        return "ok"
+
+    def _store_erase(self):
+        if not self._idle() or self.moe:
+            return "busy"
+        try:
+            os.remove(STORE_PATH)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return "error"
+        return "ok"
+
+    def _store_reply(self, what, word):
+        """`save ok`, or `save refused: <the sentence the firmware uses>`."""
+        if word == "ok":
+            self._line(f"{what} ok")
+        else:
+            self._line(f"{what} refused: " + {
+                "empty": "empty",
+                "damaged": "damaged",
+                "version": "another console version",
+                "busy": "the drive is not idle",
+                "error": "flash error",
+            }[word])
 
     def _derive(self):
         """Numbers worked out from parameters once, not every period."""
@@ -1009,7 +1110,8 @@ class FwSim:
             self._line("commands:")
             for text in ("s t m iq spd pos align off on clear hang",
                          "ver x get set id vd cap dump",
-                         "v th brk drv hallcal hall olf can"):
+                         "v th brk drv hallcal hall olf can",
+                         "save load sto"):
                 self._line("  " + text)
         elif cmd.startswith("iq "):
             v = _clamp(_parse_int(cmd[3:]), -16384, 16384)
@@ -1073,6 +1175,20 @@ class FwSim:
             self._line(f"hall ok {int(self.h_valid)} err {self.h_err} e {edges}")
         elif cmd.startswith("hang"):
             self._line("hanging: the watchdog should reset the board")
+        elif _after_word(cmd, "save") is not None:
+            self._store_reply("save", self._store_save())
+        elif _after_word(cmd, "load") is not None:
+            self._store_reply("load", self._store_load())
+        elif (arg := _after_word(cmd, "sto")) is not None:
+            if arg.startswith("clear"):
+                self._store_reply("sto clear", self._store_erase())
+            else:
+                rec = self._store_read() or {}
+                self._line(f"sto state {self._store_state()} "
+                           f"boot {self.store_boot} "
+                           f"console {rec.get('console', 0)} "
+                           f"p {len(rec.get('params', {}))} "
+                           f"hall {1 if rec.get('hall') else 0}")
         elif (arg := _after_word(cmd, "set")) is not None:
             for name, *_rest in PARAMS:
                 value = _after_word(arg, name)
@@ -1240,6 +1356,14 @@ def selfcheck():
     documentation says the model does? (name, passed, detail) rows."""
     rows = []
 
+    # Every FwSim() below is a boot, and a boot reads the saved settings.
+    # Whatever the last run or the last emulator window left in the file
+    # would otherwise decide what these checks start from.
+    try:
+        os.remove(STORE_PATH)
+    except OSError:
+        pass
+
     def check(name, ok, detail=""):
         rows.append((name, bool(ok), str(detail)))
 
@@ -1250,7 +1374,7 @@ def selfcheck():
 
     fw = FwSim(realtime=False)
     check("unknown command", talk(fw, "nonsense") == ["? for help"], "")
-    check("version line", talk(fw, "ver") == ["fw 3 cap 256"], "")
+    check("version line", talk(fw, "ver") == ["fw 4 cap 256"], "")
     check("set clamps to the firmware's range",
           talk(fw, "set cki 99999") == ["p cki 32767"], "")
     fw.write_line("set cki 900")
@@ -1452,6 +1576,44 @@ def selfcheck():
           f"{len(fw.cap)} runs, T {d['t']:.1f}, speed {d.get('speed')}, {d['why']}")
     check("  and matches what `olf` prints",
           talk(fw, "olf")[0].split()[1:] == [f"{b:02x}" for b in fw.ol_frame], "")
+
+    # ---- the settings kept in the page
+    def sto_line(fw):
+        """`sto state ok boot empty console 4 p 33 hall 0` as a dict."""
+        parts = talk(fw, "sto")[0].split()
+        return dict(zip(parts[1::2], parts[2::2])), " ".join(parts)
+
+    fw = FwSim(realtime=False)
+    sto, text = sto_line(fw)
+    check("an erased page reports empty",
+          sto["state"] == "empty" and sto["p"] == "0", text)
+    fw.write_line("set drvspd 4321")
+    fw.write_line("set regen 7777")
+    check("`save` writes it", talk(fw, "save") == ["save ok"], "")
+    sto, text = sto_line(fw)
+    check("  and the page says what it holds",
+          sto["state"] == "ok" and sto["p"] == str(len(PARAMS))
+          and sto["console"] == str(CONSOLE_VERSION), text)
+    fw.write_line("set drvspd 1000")
+    check("`load` puts it back",
+          talk(fw, "load") == ["load ok"] and fw.p["drvspd"] == 4321,
+          f"drvspd {fw.p['drvspd']}")
+
+    # A new FwSim is a power cycle: this is the whole point of the page.
+    fw = FwSim(realtime=False)
+    check("a board that restarts comes up on the saved values",
+          fw.p["drvspd"] == 4321 and fw.p["regen"] == 7777 and fw.store_boot == "ok",
+          f"drvspd {fw.p['drvspd']}, regen {fw.p['regen']}, boot {fw.store_boot}")
+    fw.write_line("iq 2000")
+    check("`save` is refused while something is being driven",
+          talk(fw, "save") == ["save refused: the drive is not idle"], "")
+    fw.write_line("off")
+    check("`sto clear` erases the page", talk(fw, "sto clear") == ["sto clear ok"], "")
+    fw = FwSim(realtime=False)
+    check("  and then a restart comes up on the defaults",
+          fw.p["drvspd"] == PARAMS[PARAM_INDEX["drvspd"]][1]
+          and fw.store_boot == "empty",
+          f"drvspd {fw.p['drvspd']}, boot {fw.store_boot}")
     return rows
 
 

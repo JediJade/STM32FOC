@@ -658,6 +658,71 @@ int32_t sensor_hall_edge(int code)
   return (int32_t)h_edge[code & 7];
 }
 
+/*
+ * The learned table, for store.c.
+ *
+ * Only the edges and the ring are handed over. The widths are not: they are
+ * the differences between neighbouring edges, so storing them as well would
+ * be storing the same six numbers twice and leaving room for a record whose
+ * widths and edges disagree.
+ */
+int sensor_hall_table_get(uint16_t *edge, uint8_t *next)
+{
+  int c;
+
+  for (c = 0; c < 8; c++) {
+    edge[c] = h_edge[c];
+    next[c] = (h_wid[c] != 0u) ? h_next[c] : 0u;
+  }
+  return (int)h_valid;
+}
+
+/*
+ * Put one back. A state whose `next` is zero never occurs - code 0 and code
+ * 7 are all-off and all-on, which no working set of three sensors produces,
+ * so zero cannot be a real successor and needs no separate flag.
+ *
+ * Returns 0 if it was taken. The caller holds the control interrupt off.
+ */
+int sensor_hall_table_set(const uint16_t *edge, const uint8_t *next)
+{
+  int      c;
+  int      seen = 0;
+  uint16_t ring = 0u;
+
+  for (c = 1; c < 7; c++) {
+    if (next[c] != 0u) {
+      if ((next[c] > 6u) || (next[c] == (uint8_t)c)) {
+        return -1;
+      }
+      ring |= (uint16_t)(1u << next[c]);
+      seen++;
+    }
+  }
+  /* Six states, each the successor of exactly one other: the ring the
+     calibration found. Anything else is not a table this code can use. */
+  if ((seen != 6) || (ring != 0x7Eu)) {
+    return -1;
+  }
+
+  for (c = 0; c < 8; c++) {
+    h_edge[c] = edge[c];
+    h_next[c] = next[c];
+    h_wid[c]  = 0u;
+  }
+  for (c = 0; c < 8; c++) {
+    if (h_next[c] != 0u) {
+      h_wid[c] = (uint16_t)(h_edge[h_next[c]] - h_edge[c]);
+    }
+  }
+  h_valid = 1u;
+  h_err   = 0u;
+  if (kind == SENS_HALL) {
+    hall_seed();              /* the angle in flight was built on the old table */
+  }
+  return 0;
+}
+
 uint32_t sensor_hall_errors(void)
 {
   return h_err;

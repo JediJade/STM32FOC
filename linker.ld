@@ -1,9 +1,18 @@
-/* STM32F103C8/CB: 64K flash, 20K RAM */
+/* STM32F103C8/CB: 64K flash, 20K RAM.
+
+   The last 1K page is not in the FLASH region. store.c keeps the saved
+   settings there, and the one way to be sure a save never erases a piece of
+   the running code is for the linker to refuse to put code there: a build
+   that grows past 63K fails to link rather than failing in the field. */
 MEMORY
 {
-  FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K
+  FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 63K
   RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
 }
+
+/* Where store.c writes. Kept here so that the address and the region it is
+   carved out of are stated in one place. */
+_store_page = ORIGIN(FLASH) + 63K;
 
 ENTRY(Reset_Handler)
 

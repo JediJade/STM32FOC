@@ -69,6 +69,11 @@ self-test ใช้เวลาราว 12 วินาที (ตัวกว�
 | `src/selftest.c` | self-test แปดตัว **และ ADC interrupt** |
 | `src/usb_cdc.c` | USB CDC-ACM ระดับรีจิสเตอร์ |
 | `src/console.c` | พาร์สบรรทัด, คอมมานด์, telemetry |
+| `src/drive.c` | v0.3: คันเร่ง, เบรก, field weakening และอาร์เรย์พารามิเตอร์ที่ทุกส่วนใช้ร่วมกัน |
+| `src/sensor.c` | v0.3: มุมโรเตอร์จาก Hall sensor หรือจาก observer และการคาลิเบรต Hall |
+| `src/oneline.c` | v0.3: สัญญาณหน้าปัดแบบเส้นเดียว (SIF) |
+| `src/canbus.c` | v0.3: bxCAN ระดับรีจิสเตอร์, โปรโตคอล และเทสต์ loopback |
+| `src/store.c` | v0.4: เก็บพารามิเตอร์และตาราง Hall ไว้ในหน้า flash สุดท้าย |
 | `src/safety.c` | ประตูคุม MOE: กฎการ arm, fault ที่ล็อก, watchdog |
 | `cmsis/` | header รีจิสเตอร์ของ ST เท่านั้น — ไม่มี HAL ไม่มี middleware ไม่มี CMSIS `.c` |
 | `read-selftest.py` | ตัวอ่านฝั่งโฮสต์ parse โครง struct จากเฮดเดอร์เอง |

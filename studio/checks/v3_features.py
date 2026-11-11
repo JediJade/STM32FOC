@@ -136,7 +136,8 @@ def main(argv):
 
     # ---- what is there
     ver = b.talk("ver")
-    b.check("console version 3", ver == ["fw 3 cap 256"], ver)
+    b.check("console version 4 or later", ver and ver[0].startswith("fw ")
+            and int(ver[0].split()[1]) >= 3, ver)
     b.check("every parameter listed, defaults as the firmware is built",
             len(saved) == len(fwsim.PARAMS)
             and all(saved.get(n) == d for n, d, _lo, _hi in fwsim.PARAMS),

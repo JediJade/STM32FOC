@@ -12,6 +12,7 @@
 #include "sensor.h"
 #include "oneline.h"
 #include "canbus.h"
+#include "store.h"
 #include "stm32f103xb.h"
 
 /*
@@ -19,9 +20,14 @@
  * (it has no `ver`, and answers "? for help"); 2 added settable gains, the
  * d-axis target, voltage mode, the recorder and the `x` line; 3 added the
  * throttle and brake, field weakening, the sensor selector, Hall
- * calibration, the one-line output, CAN and the `v` line.
+ * calibration, the one-line output, CAN and the `v` line; 4 added `save`,
+ * `load` and `sto`, which keep the parameters and the Hall table in flash.
+ *
+ * A host may rely on a higher number having everything a lower one had.
+ * `save` writes the parameters by number, so the number is also what tells
+ * a stored record apart from one a different parameter list wrote.
  */
-#define CONSOLE_VERSION   3
+#define CONSOLE_VERSION   4
 
 /* ------------------------------------------------------- formatting ----- */
 
@@ -190,6 +196,9 @@ static void print_help(void)
   line("  hall       the edges it learned");
   line("  olf        the one-line frame last sent");
   line("  can        CAN state; `can on` changes over to it");
+  line("  save       keep the parameters and the Hall table in flash");
+  line("  load       put back what was kept");
+  line("  sto        what the flash page holds; `sto clear` erases it");
 }
 
 static void print_state(void)
@@ -653,6 +662,45 @@ static void reply_int(const char *word, int32_t v)
   emit(buf, (uint16_t)(p - buf));
 }
 
+/*
+ * One line for what the flash page holds. `boot` is what happened to it at
+ * start-up, which is the question being asked whenever a board comes up
+ * behaving unlike the one that was put away: nothing stored, something
+ * stored and applied, or something stored that this firmware refused.
+ */
+static void print_store(void)
+{
+  char buf[88];
+  char *p = put_str(buf, "sto state ");
+
+  p = put_str(p, store_result_word(store_state()));
+  p = put_str(p, " boot ");
+  p = put_str(p, store_result_word(store_boot_result()));
+  p = put_str(p, " console ");
+  p = put_int(p, (int32_t)store_saved_console());
+  p = put_str(p, " p ");
+  p = put_int(p, (int32_t)store_saved_count());
+  p = put_str(p, " hall ");
+  p = put_int(p, (int32_t)store_saved_hall());
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+static void reply_store(const char *what, store_result r)
+{
+  char buf[72];
+  char *p = put_str(buf, what);
+
+  p = put_str(p, (r == STORE_OK) ? " ok" : " refused: ");
+  if (r != STORE_OK) {
+    p = put_str(p, store_result_name(r));
+  }
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
 static void dispatch(void)
 {
   const char *arg;
@@ -715,6 +763,16 @@ static void dispatch(void)
                                    : "? stop the drive first");
   } else if (after_word(cmd, "hall") != 0) {
     print_hall();
+  } else if (after_word(cmd, "save") != 0) {
+    reply_store("save", store_save());
+  } else if (after_word(cmd, "load") != 0) {
+    reply_store("load", store_load());
+  } else if ((arg = after_word(cmd, "sto")) != 0) {
+    if (starts_with(arg, "clear")) {
+      reply_store("sto clear", store_erase());
+    } else {
+      print_store();
+    }
   } else if (starts_with(cmd, "hang")) {
     line("hanging: the watchdog should reset the board");
     for (;;) {
