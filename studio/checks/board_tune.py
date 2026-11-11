@@ -69,7 +69,7 @@ def main(argv):
     time.sleep(1.0)
     print(f"console {link.fw}, loop {link.mode}, {link.rate:.0f} state lines a second, "
           f"{link.latency_ms:.1f} ms to answer")
-    ok = link.fw == 2
+    ok = (link.fw or 0) >= 2
     if not ok:
         print("this board has the original console: nothing to tune")
     for n in range(1, runs + 1):

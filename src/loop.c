@@ -4,6 +4,7 @@
 #include "pi.h"
 #include "tim1.h"
 #include "vmotor.h"
+#include "sensor.h"
 
 /*
  * Gains. Kp is deliberately modest and Ki carries the steady state: the
@@ -43,6 +44,14 @@ static int32_t  gain_ki  = LOOP_KI;
 static int32_t  ff_cross = LOOP_DECOUPLE_CA;
 static int32_t  ff_emf   = LOOP_BACK_EMF;
 
+/* What the loop multiplies by: the two above as they stand, or scaled by the
+   measured speed once a millisecond (foc_loop_ff_speed). */
+static int32_t  ff_cross_run = LOOP_DECOUPLE_CA;
+static int32_t  ff_emf_run   = LOOP_BACK_EMF;
+
+/* The voltage each axis may use. LOOP_OUT_MAX unless told otherwise. */
+static int32_t  out_max  = LOOP_OUT_MAX;
+
 static pi_state pi_d;
 static pi_state pi_q;
 static uint16_t angle;
@@ -50,6 +59,9 @@ static uint16_t offset;
 static int16_t  target_q;
 static int16_t  target_d;
 static foc_dq   v_cmd;
+static int16_t  fw_d;           /* field weakening: added to target_d */
+static int16_t  q_boost;        /* sensorless start: added to target_q */
+static uint8_t  ext_angle;      /* the angle comes from sensor.c */
 static int      decouple;
 static loop_mode mode;
 static uint32_t plant_cycles;
@@ -58,8 +70,8 @@ static foc_dq   last_vdq;
 
 void foc_loop_init(void)
 {
-  pi_init(&pi_d, gain_kp, gain_ki, LOOP_OUT_MAX);
-  pi_init(&pi_q, gain_kp, gain_ki, LOOP_OUT_MAX);
+  pi_init(&pi_d, gain_kp, gain_ki, out_max);
+  pi_init(&pi_q, gain_kp, gain_ki, out_max);
   angle    = 0u;
   target_q = 0;
   target_d = 0;
@@ -94,8 +106,67 @@ void foc_loop_set_gains(int32_t kp, int32_t ki)
 {
   gain_kp = kp;
   gain_ki = ki;
-  pi_configure(&pi_d, kp, ki, LOOP_OUT_MAX);
-  pi_configure(&pi_q, kp, ki, LOOP_OUT_MAX);
+  pi_configure(&pi_d, kp, ki, out_max);
+  pi_configure(&pi_q, kp, ki, out_max);
+}
+
+void foc_loop_set_vlim(int32_t limit)
+{
+  out_max = limit;
+  pi_configure(&pi_d, gain_kp, gain_ki, out_max);
+  pi_configure(&pi_q, gain_kp, gain_ki, out_max);
+}
+
+int32_t foc_loop_vlim(void)
+{
+  return out_max;
+}
+
+int16_t foc_loop_target(void)
+{
+  return target_q;
+}
+
+void foc_loop_set_fw_d(int16_t id)
+{
+  fw_d = id;
+}
+
+void foc_loop_set_q_boost(int16_t iq)
+{
+  q_boost = iq;
+}
+
+void foc_loop_set_ext_angle(int on)
+{
+  ext_angle = (uint8_t)((on != 0) ? 1u : 0u);
+}
+
+void foc_loop_ff_speed(int on, int32_t speed)
+{
+  if (on != 0) {
+    int32_t c;
+    int32_t e;
+
+    if (speed >  16000) { speed =  16000; }
+    if (speed < -16000) { speed = -16000; }
+
+    /* The two constants are what the plant does at LOOP_FF_SPEED. Both of
+       its terms are proportional to speed, sign included. */
+    c = (ff_cross * speed) / LOOP_FF_SPEED;
+    e = (ff_emf   * speed) / LOOP_FF_SPEED;
+
+    /* 65535 times a current of 32767 is the most an int32 product holds */
+    if (c >  65535) { c =  65535; }
+    if (c < -65535) { c = -65535; }
+    if (e >  32767) { e =  32767; }
+    if (e < -32767) { e = -32767; }
+    ff_cross_run = c;
+    ff_emf_run   = e;
+  } else {
+    ff_cross_run = ff_cross;
+    ff_emf_run   = ff_emf;
+  }
 }
 
 void foc_loop_get_gains(int32_t *kp, int32_t *ki)
@@ -108,6 +179,8 @@ void foc_loop_set_feedforward(int32_t cross, int32_t back_emf)
 {
   ff_cross = cross;
   ff_emf   = back_emf;
+  ff_cross_run = cross;
+  ff_emf_run   = back_emf;
 }
 
 void foc_loop_get_feedforward(int32_t *cross, int32_t *back_emf)
@@ -169,6 +242,7 @@ foc_dq foc_loop_step(void)
   foc_dq  i_dq;
   foc_ab  v_ab;
   foc_abc duty;
+  foc_sc  sc;
 
   /* 1. where the rotor is, as far as this firmware knows: the sensor reading
         corrected by the offset that alignment found. Before alignment the
@@ -176,7 +250,13 @@ foc_dq foc_loop_step(void)
         situation the alignment procedure exists to fix. */
   uint32_t plant_c0 = DWT->CYCCNT;
 
-  angle = (uint16_t)(vmotor_sensor_angle() - offset);
+  if (ext_angle != 0u) {
+    /* Hall sensors or the observer: sensor.c worked this out at the end of
+       the last period. The encoder is not consulted at all. */
+    angle = sensor_angle();
+  } else {
+    angle = (uint16_t)(vmotor_sensor_angle() - offset);
+  }
 
   /* 2. measure: two phase currents. On real hardware this is where the two
         injected ADC results would be read instead. */
@@ -186,7 +266,8 @@ foc_dq foc_loop_step(void)
 
   /* 3. three phase -> two axis -> rotor frame */
   i_ab = foc_clarke(ia, ib);
-  i_dq = foc_park(i_ab, angle);
+  sc   = foc_sincos(angle);
+  i_dq = foc_park_sc(i_ab, sc);
 
   switch (mode) {
   case LOOP_MODE_ALIGN:
@@ -202,27 +283,27 @@ foc_dq foc_loop_step(void)
     break;
 
   case LOOP_MODE_CURRENT: {
-    int32_t vd = pi_step(&pi_d, (int32_t)target_d - (int32_t)i_dq.d);
-    int32_t vq = pi_step(&pi_q, (int32_t)target_q - (int32_t)i_dq.q);
+    int32_t vd = pi_step(&pi_d, (int32_t)target_d + fw_d - (int32_t)i_dq.d);
+    int32_t vq = pi_step(&pi_q, (int32_t)target_q + q_boost - (int32_t)i_dq.q);
     foc_dq  v_dq;
 
     if (decouple != 0) {
       /* Hand the controllers the part of the plant that is predictable */
-      vd -= (int32_t)q15_mul((int16_t)i_dq.q, (int16_t)ff_cross);
-      vq += (int32_t)q15_mul((int16_t)i_dq.d, (int16_t)ff_cross);
-      vq += ff_emf;
+      vd -= ((int32_t)i_dq.q * ff_cross_run) >> 15;
+      vq += ((int32_t)i_dq.d * ff_cross_run) >> 15;
+      vq += ff_emf_run;
     }
 
-    if (vd >  LOOP_OUT_MAX) { vd =  LOOP_OUT_MAX; }
-    if (vd < -LOOP_OUT_MAX) { vd = -LOOP_OUT_MAX; }
-    if (vq >  LOOP_OUT_MAX) { vq =  LOOP_OUT_MAX; }
-    if (vq < -LOOP_OUT_MAX) { vq = -LOOP_OUT_MAX; }
+    if (vd >  out_max) { vd =  out_max; }
+    if (vd < -out_max) { vd = -out_max; }
+    if (vq >  out_max) { vq =  out_max; }
+    if (vq < -out_max) { vq = -out_max; }
 
     v_dq.d = (int16_t)vd;
     v_dq.q = (int16_t)vq;
 
     last_vdq = v_dq;
-    v_ab = foc_inv_park(v_dq, angle);
+    v_ab = foc_inv_park_sc(v_dq, sc);
     break;
   }
 
@@ -230,7 +311,7 @@ foc_dq foc_loop_step(void)
     /* The commanded voltage, straight through. The console has already
        limited it; nothing here second-guesses the number. */
     last_vdq = v_cmd;
-    v_ab = foc_inv_park(v_cmd, angle);
+    v_ab = foc_inv_park_sc(v_cmd, sc);
     break;
 
   case LOOP_MODE_IDLE:
@@ -251,6 +332,12 @@ foc_dq foc_loop_step(void)
   plant_c0 = DWT->CYCCNT;
   vmotor_step(v_ab.alpha, v_ab.beta);
   plant_cycles += (DWT->CYCCNT - plant_c0);
+
+  if (ext_angle != 0u) {
+    /* After the plant has moved, so the Hall sensors read where the rotor
+       will be when the next period starts. */
+    sensor_update(i_ab, v_ab);
+  }
 
   last_dq = i_dq;
   return i_dq;

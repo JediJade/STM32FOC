@@ -1,6 +1,9 @@
 #include "capture.h"
 #include "loop.h"
 #include "outer.h"
+#include "sensor.h"
+#include "drive.h"
+#include "stm32f103xb.h"
 
 static int16_t  buf[CAPTURE_LEN];
 
@@ -12,6 +15,8 @@ static volatile capture_channel channel;
 static volatile uint16_t        divider;
 static volatile uint16_t        count;
 static volatile uint16_t        phase;
+static uint16_t                 ol_run;
+static uint8_t                  ol_level;
 
 void capture_arm(capture_channel ch, uint16_t div)
 {
@@ -31,9 +36,25 @@ void capture_arm(capture_channel ch, uint16_t div)
   state   = CAPTURE_ARMED;
 }
 
+void capture_ol_frame(void)
+{
+  if (channel != CAPTURE_OL) {
+    return;
+  }
+  if (state == CAPTURE_RUNNING) {
+    state = CAPTURE_DONE;
+  } else if (state == CAPTURE_ARMED) {
+    count    = 0u;
+    ol_run   = 0u;
+    ol_level = 0u;
+    state    = CAPTURE_RUNNING;
+  }
+}
+
 void capture_trigger(void)
 {
-  if (state == CAPTURE_ARMED) {
+  /* The one-line record starts with a frame, not with a target. */
+  if ((state == CAPTURE_ARMED) && (channel != CAPTURE_OL)) {
     count = 0u;
     phase = 0u;
     state = CAPTURE_RUNNING;
@@ -45,6 +66,21 @@ void capture_tick(void)
   int16_t v;
 
   if (state != CAPTURE_RUNNING) {
+    return;
+  }
+
+  if (channel == CAPTURE_OL) {
+    uint8_t level = (uint8_t)((GPIOB->IDR >> 10) & 1u);
+
+    if (level != ol_level) {
+      if (count < CAPTURE_LEN) {
+        buf[count] = (int16_t)((ol_level != 0u) ? (int32_t)ol_run : -(int32_t)ol_run);
+        count++;
+      }
+      ol_run   = 0u;
+      ol_level = level;
+    }
+    ol_run++;
     return;
   }
 
@@ -67,6 +103,9 @@ void capture_tick(void)
     break;
   }
   case CAPTURE_ANGLE: v = (int16_t)foc_loop_angle();     break;
+  case CAPTURE_HALL:  v = (int16_t)sensor_hall_now();    break;
+  case CAPTURE_AERR:  v = sensor_angle_error();          break;
+  case CAPTURE_IDFW:  v = drive_fw_d();                  break;
   default:            v = 0;                             break;
   }
 

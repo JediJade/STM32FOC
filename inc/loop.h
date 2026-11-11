@@ -63,6 +63,45 @@ void     foc_loop_set_voltage(int16_t vd, int16_t vq);
 void     foc_loop_set_gains(int32_t kp, int32_t ki);
 void     foc_loop_get_gains(int32_t *kp, int32_t *ki);
 
+/*
+ * The voltage either axis may use, Q15. 0.9 of full scale as built. Lower
+ * it and the loop behaves as it would on a lower supply: it runs out of
+ * voltage at a lower speed, which is where field weakening starts to matter.
+ */
+void     foc_loop_set_vlim(int32_t limit);
+int32_t  foc_loop_vlim(void);
+
+/* The q-axis target as last set, by whoever set it. */
+int16_t  foc_loop_target(void);
+
+/*
+ * Two offsets other modules add to the targets without owning them.
+ *
+ * fw_d is the field-weakening current: negative d-axis current that the
+ * drive layer raises when the loop is running out of voltage. q_boost is
+ * the sensorless start: while the rotor is being dragged round at a forced
+ * angle, the current has to be what the start needs, not what was asked
+ * for. Both are zero unless something is using them.
+ */
+void     foc_loop_set_fw_d(int16_t id);
+void     foc_loop_set_q_boost(int16_t iq);
+
+/* 1: take the angle from sensor.c (Hall sensors, observer, calibration)
+   and feed it currents and voltages. 0: the encoder, as built. */
+void     foc_loop_set_ext_angle(int on);
+
+/*
+ * Feed-forward that follows the speed.
+ *
+ * The two constants are what the plant does at one speed - the one the
+ * current loop was characterised at, LOOP_FF_SPEED. Both terms are really
+ * proportional to speed. Called once a millisecond with on = 1, this scales
+ * them by the measured speed; with on = 0 they are used as they stand,
+ * which is what the firmware always did.
+ */
+#define LOOP_FF_SPEED   6560
+void     foc_loop_ff_speed(int on, int32_t speed);
+
 /* The two feed-forward constants, Q15: cross-coupling and back-EMF. */
 void     foc_loop_set_feedforward(int32_t cross, int32_t back_emf);
 void     foc_loop_get_feedforward(int32_t *cross, int32_t *back_emf);

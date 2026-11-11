@@ -11,7 +11,7 @@ two things:
 
 ![drive page](docs/drive.png)
 
-## Pages (keys 1 to 6)
+## Pages (keys 1 to 7)
 
 | | page | simulator | board |
 | --- | --- | --- | --- |
@@ -21,6 +21,7 @@ two things:
 | 4 | **parameters** | 29 numbered parameters in five groups, save and load | the nine gains in the firmware, plus the two bandwidths auto tune aims for |
 | 5 | **scope** | speed, torque current, phase currents, current vector, at 5 kHz | speed and d/q currents at 100 Hz |
 | 6 | **board** | - | port list, connect, self-test result, firmware commands, console |
+| 7 | **vehicle** | - (opens the firmware model) | throttle, brake, sensor selector, Hall calibration, field weakening, dashboard frame, CAN |
 
 Auto tune and parameters work on the board when its firmware has console
 version 2. With the original console they stay with the simulator and say so.
@@ -33,13 +34,17 @@ the arrow keys.
 ```
 dist\FOC.exe                     the window (after build-exe.cmd)
 python foc.py                    the same, from source - needs Pillow
-python foc.py --emulator         adds a port called "emulator": the firmware's
-                                 arithmetic in Python, for when no board is at hand
+python foc.py --vehicle-shots pictures [--port COM13] [--can]
+                                 pictures of the vehicle page, on the firmware
+                                 model or on a board
 python foc.py --selftest out.txt run the simulator's 16 checks, write the result
 python foc.py --shots pictures   save a picture of every page
 python foc.py --shots pictures --port COM13   ... and of the board pages too
 python focsim.py                 the simulator's 16 checks, printed
-python fwsim.py                  the emulator's 12 checks, printed
+python fwsim.py                  the firmware model's 40 checks, printed
+python protocols.py              the one-line and CAN formats' 5 checks
+python checks\v3_features.py COM13 --can
+                                 console version 3 on a board, 33 checks
 ```
 
 `build-exe.cmd` makes `dist\FOC.exe` with PyInstaller: one file, about
@@ -131,6 +136,46 @@ has the original.
 7. **The motor model never quite stops in idle** - not changed. Its integer
    friction term rounds to nothing at low speed; it creeps at 18 to 40 rpm.
 
+## The vehicle page (firmware version 0.3, console version 3)
+
+![vehicle page](docs/vehicle.png)
+
+Everything version 0.3 added to the firmware, on one page. It needs a
+board with console version 3 - or the **firmware model**, a port called
+"emulator" that is always in the list: `fwsim.py`, the firmware's own
+integer arithmetic running here. The page offers to open it when nothing is
+connected. There is no third implementation for the built-in simulator.
+
+- **Throttle** is a slider. It is sent as the ADC reading that position
+  would give (`th`), so the firmware's calibration, ramp and broken-wire
+  check all run as they would on the pin.
+- **drive / stop / brake.** `drive` waits until the throttle has been at
+  zero. `brake` is a switch: throttle cut, regeneration, lamp.
+- **Rotor angle from** encoder, hall or observer, changed only while
+  stopped. Under it, the angle in use against the model's own rotor.
+- **Hall sensors.** `latch` or `3144 / 3143` sets what the model's sensors
+  are like; `calibrate` runs `hallcal` and shows the six sectors found.
+- **Motor model** changes the firmware's motor and loads gains that suit
+  it, because the firmware does not.
+- **Field weakening** on or off; the field current is shown beside the
+  torque current.
+- **Dashboard** switches the one-line output on and decodes the frame the
+  firmware says it sent. `check at the pin` records PB10 itself and
+  decodes the waveform: on the board, 194 level changes, T = 500 us,
+  checksum good.
+- **CAN.** The lamp is the power-on loopback test. `change over to can`
+  sends `can on`: the port goes, the page says so, and the window
+  reconnects when the board comes back.
+
+![hall sensors of the 3144 kind](docs/vehicle-hall.png)
+![field weakening on the hub motor, no sensor](docs/vehicle-weakening.png)
+
+With the second motor, the observer and field weakening, on the board:
+9403 rpm, where the same motor stops near 4800 without. The parameters
+page has four more groups for all of this.
+
+![parameters, group 6](docs/vehicle-parameters.png)
+
 ## The simulator
 
 - **Motor:** dq model with cross-coupling and back-EMF, viscous friction, and
@@ -165,9 +210,11 @@ Identification lands within 1 % of the real motor on all four quantities.
 | `boardlink.py` | serial port, the 100 Hz polling thread, the firmware's line formats - no UI |
 | `boardtune.py` | auto tune for the board, in the firmware's units - no UI |
 | `fwsim.py` | the firmware's control arithmetic and console in Python: a stand-in for a board, and its self-check |
+| `vehicle.py` | the vehicle page |
+| `protocols.py` | the one-line frame and the CAN frames: build, decode, check - no UI |
 | `braun.py` | drawing kit: round buttons, sliders, dial, dark screens, all anti-aliased with Pillow |
 | `build-exe.cmd` | builds `dist\FOC.exe` |
-| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it) |
+| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model) |
 
 `fwsim.py` is a test double, not evidence. On the same voltage step its
 256 recorded samples differ from the board's by at most 2 counts; on a speed

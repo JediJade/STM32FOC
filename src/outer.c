@@ -3,6 +3,7 @@
 #include "pi.h"
 #include "loop.h"
 #include "foc.h"
+#include "sensor.h"
 
 /*
  * Gains.
@@ -51,6 +52,7 @@ static int32_t   speed_ref;
 static int32_t   iq_ref;
 static uint16_t  position_ref;
 static uint32_t  cycles;
+static uint8_t   use_sensor;    /* speed comes from sensor.c, not the angle */
 
 void outer_init(void)
 {
@@ -113,6 +115,13 @@ void outer_tick(uint16_t measured_angle)
   prev_angle = measured_angle;
   have_prev  = 1;
 
+  /* An angle put together from Hall edges, or from an observer, is not
+     smooth enough to differentiate over one millisecond. What produced it
+     has a better idea of the speed. */
+  if (use_sensor != 0u) {
+    speed_meas = sensor_speed();
+  }
+
   if (mode == OUTER_MODE_OFF) {
     return;
   }
@@ -157,6 +166,21 @@ void outer_set_pos_kp(int32_t kp)
 int32_t outer_pos_kp(void)
 {
   return gain_pos_kp;
+}
+
+void outer_use_sensor_speed(int on)
+{
+  use_sensor = (uint8_t)((on != 0) ? 1u : 0u);
+}
+
+uint8_t outer_phase(void)
+{
+  return divider;
+}
+
+void outer_hold(void)
+{
+  pi_reset(&pi_speed);
 }
 
 outer_mode outer_mode_get(void) { return mode; }

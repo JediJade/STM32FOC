@@ -651,6 +651,23 @@ void usb_cdc_init(void)
   NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
 }
 
+void usb_cdc_stop(void)
+{
+  /* The interrupt first: its vector is shared with the CAN controller's
+     receive interrupt, and after this the CAN controller may be next. */
+  NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
+
+  USB->CNTR = USB_CNTR_FRES | USB_CNTR_PDWN;
+  USB->ISTR = 0U;
+  RCC->APB1ENR &= ~RCC_APB1ENR_USBEN;
+  NVIC_ClearPendingIRQ(USB_LP_CAN1_RX0_IRQn);
+
+  configured = 0U;
+  tx_busy    = 0U;
+  rx_len     = 0U;
+  rx_pos     = 0U;
+}
+
 int usb_cdc_configured(void)
 {
   return (configured != 0U) ? 1 : 0;

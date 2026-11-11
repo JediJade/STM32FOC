@@ -9,12 +9,13 @@ one built in, or the STM32FOC firmware on a board.
                                      save a picture of each into DIR
     python foc.py --shots DIR --port COM13
                                      the same, then again against the board
-    python foc.py --emulator         adds a port called "emulator": fwsim.py
-                                     standing in for a board
+    python foc.py --vehicle-shots DIR [--port COM13]
+                                     pictures of the vehicle page, on the
+                                     firmware model or on a board
 
 Built as a single FOC.exe by build-exe.cmd, it takes the same arguments.
 
-Six pages, keys 1 to 6:
+Seven pages, keys 1 to 7:
 
   drive        speed slider, run / stop, an analogue dial
   display      the live values, large
@@ -22,6 +23,8 @@ Six pages, keys 1 to 6:
   parameters   every setting, numbered and grouped the way a drive lists them
   scope        speed and currents against time
   board        connect to the firmware, its self-test, its console
+  vehicle      throttle, brake, sensor selector, field weakening, the
+               dashboard signal and CAN (vehicle.py) - console version 3
 
 Two sources of truth, one at a time. Until a board is connected every page
 shows the simulated motor (focsim.py). Connecting on the board page switches
@@ -49,10 +52,11 @@ from tkinter import filedialog
 import boardlink
 import boardtune
 import braun as B
+import vehicle
 from focsim import (AutoTune, BY_KEY, Drive, GROUPS, MODE_SPEED, PARAMS,
                     Param, selfcheck)
 
-VERSION = "2.2"
+VERSION = "3.0"
 APP_ID = "unitymbed.stm32foc.studio"
 ICON_FILE = "unitymbed.ico"
 
@@ -437,7 +441,12 @@ BOARD_GROUPS = [
     (1, "current controller", "inner loop on the board, 20 kHz"),
     (2, "speed and position", "outer loops on the board, 1 kHz"),
     (3, "auto tune targets", "what auto tune designs for - kept here, not on the board"),
+    (4, "voltage and weakening", "the voltage limit and what happens at it"),
+    (5, "rotor angle", "encoder, hall sensors or the observer"),
+    (6, "throttle and brake", "the vehicle side: inputs, limits, braking"),
+    (7, "dashboard and can", "the one-line signal and the can bus"),
 ]
+BOARD_GROUPS_V2 = BOARD_GROUPS[:3]      # what a console 2 board has
 
 BOARD_PARAMS = [
     Param("1.01", "ckp", "proportional gain", "Q15", 6000, 0, 262144, 500, 0,
@@ -446,16 +455,18 @@ BOARD_PARAMS = [
     Param("1.02", "cki", "integral gain", "Q15", 900, 0, 32767, 50, 0,
           "Current controller Ki per 50 µs period: 32768 would add the whole "
           "error to the output every period."),
-    Param("1.03", "cdec", "decoupling", "", 1, 0, 1, 1, 0,
-          "Feed-forward of the cross-coupling and back-EMF terms. Auto tune "
-          "switches it off while it measures and puts it back.",
-          choices=("off", "on")),
-    Param("1.04", "ccross", "cross-coupling term", "Q15", 20580, 0, 32767, 500, 0,
+    Param("1.03", "cdec", "decoupling", "", 1, 0, 2, 1, 0,
+          "Feed-forward of the cross-coupling and back-EMF terms. Fixed uses "
+          "the two values below as they stand, which is right at 6000 rpm; "
+          "with speed scales both by the measured speed (console 3). Auto "
+          "tune switches it off while it measures and puts it back.",
+          choices=("off", "fixed", "with speed")),
+    Param("1.04", "ccross", "cross-coupling term", "Q15", 20580, 0, 65535, 500, 0,
           "How much of each axis's current is fed forward into the other "
-          "axis's voltage. A constant in this firmware, right for one speed."),
-    Param("1.05", "cemf", "back-emf term", "Q15", 6554, 0, 32767, 100, 0,
-          "Voltage added to the q axis to cancel the back-EMF. A constant in "
-          "this firmware, right for one speed."),
+          "axis's voltage, at 6000 rpm."),
+    Param("1.05", "cemf", "back-emf term", "Q15", 6554, 0, 131071, 100, 0,
+          "Voltage added to the q axis to cancel the back-EMF, at 6000 rpm. "
+          "The observer also uses it, to turn a back-EMF into a speed."),
     Param("2.01", "skp", "speed proportional gain", "Q15", 32768, 0, 1048576, 2000, 0,
           "Speed controller Kp: 32768 is one count of torque current per "
           "angle unit per ms of speed error."),
@@ -473,7 +484,76 @@ BOARD_PARAMS = [
     Param("3.02", "sbw", "speed loop bandwidth", "Hz", 20, 2, 60, 1, 0,
           "The bandwidth auto tune designs the speed loop for. It has to "
           "stay several times below the current loop's."),
+    Param("4.01", "vlim", "voltage limit", "Q15", 29491, 4096, 29491, 500, 0,
+          "The voltage either axis may use. 29491 is 0.9 of the supply. "
+          "Lower it and the motor behaves as on a lower supply."),
+    Param("4.02", "fw", "field weakening current", "counts", 0, 0, 16384, 512, 0,
+          "The most negative d-axis current field weakening may add. 0 "
+          "switches it off."),
+    Param("4.03", "fwstart", "weakening starts at", "Q15", 29491, 16384, 32767, 500, 0,
+          "The fraction of the voltage limit in use at which weakening "
+          "starts: 29491 is 90 %."),
+    Param("4.04", "mot", "motor model", "", 0, 0, 1, 1, 0,
+          "Which motor the firmware's model is. Changing it is changing the "
+          "motor on the bench: the gains do not follow. The vehicle page "
+          "changes both together.", choices=("gimbal", "hub")),
+    Param("5.01", "sens", "rotor angle from", "", 0, 0, 2, 1, 0,
+          "Where the loop gets the rotor angle. Only while the drive is "
+          "stopped, and hall only once calibrated.",
+          choices=("encoder", "hall", "observer")),
+    Param("5.02", "hsrc", "hall signals from", "", 0, 0, 1, 1, 0,
+          "The model's own sensors, or the pins PB5, PB6, PB7 (pulled up, "
+          "for open-collector sensors such as the 3144).",
+          choices=("model", "pins")),
+    Param("5.03", "hwid", "model sensor on-width", "units", 32768, 22000, 43000, 500, 0,
+          "How much of a turn a model Hall sensor stays on. 32768 is a "
+          "latch; a unipolar switch such as the 3144 gives less."),
+    Param("5.04", "sla", "observer winding constant", "Q15", 1638, 128, 32767, 10, 0,
+          "The control period over the winding's L/R: 1638 is 1 ms, 328 is "
+          "5 ms. What the observer takes the winding to be."),
+    Param("5.05", "slmin", "observer takes over at", "units/ms", 600, 100, 3000, 50, 0,
+          "Above this speed the observer supplies the angle. Below it the "
+          "rotor is dragged round at a forced angle."),
+    Param("5.06", "slcur", "starting current", "counts", 4000, 0, 16384, 250, 0,
+          "The current used while the rotor is on the forced angle."),
+    Param("5.07", "slramp", "starting ramp", "units/ms/s", 2000, 100, 20000, 100, 0,
+          "How fast the forced angle speeds up."),
+    Param("6.01", "insrc", "throttle and brake from", "", 0, 0, 1, 1, 0,
+          "This window, or the pins: throttle on PA2 (0 to 3.3 V), brake "
+          "switch from PB11 to ground.", choices=("window", "pins")),
+    Param("6.02", "thmin", "throttle released", "counts", 900, 0, 4095, 10, 0,
+          "The reading with the throttle released. A reading under half of "
+          "this is taken for a broken wire."),
+    Param("6.03", "thmax", "throttle fully open", "counts", 3300, 0, 4095, 10, 0,
+          "The reading at full throttle. A reading more than half way from "
+          "here to 4095 is taken for a short to the supply."),
+    Param("6.04", "thmode", "throttle is", "", 0, 0, 1, 1, 0,
+          "Torque: the throttle sets the torque current, up to the limit in "
+          "2.03. Speed: it sets the speed, up to the top speed.",
+          choices=("torque", "speed")),
+    Param("6.05", "thramp", "throttle ramp", "/ms", 66, 1, 32767, 5, 0,
+          "How fast the throttle may rise, out of 32767 per ms. 66 is half "
+          "a second from closed to open. It falls at once."),
+    Param("6.06", "drvspd", "top speed", "units/ms", 6560, 100, 16000, 100, 0,
+          "The speed at which throttle torque is taken away. 6560 is 6000 rpm."),
+    Param("6.07", "regen", "braking current", "counts", 4096, 0, 16384, 256, 0,
+          "The current the brake regenerates with. 0: the brake only cuts "
+          "the throttle."),
+    Param("7.01", "ol", "one-line output", "", 0, 0, 1, 1, 0,
+          "The dashboard signal on PB10.", choices=("off", "on")),
+    Param("7.02", "olt", "one-line time unit", "x 50 µs", 10, 5, 40, 1, 0,
+          "The unit every pulse of the signal is a multiple of. 10 is 0.5 ms."),
+    Param("7.03", "canid", "can node number", "", 1, 1, 127, 1, 0,
+          "Added to each frame's identifier."),
+    Param("7.04", "canbr", "can bit rate", "kbit/s", 500, 125, 1000, 125, 0,
+          "125, 250, 500 or 1000."),
+    Param("7.05", "canper", "can status period", "ms", 20, 5, 1000, 5, 0,
+          "How often the two status frames go out."),
+    Param("7.06", "canback", "back to usb after", "s", 10, 0, 600, 1, 0,
+          "On CAN, with no frame arriving for this long, the board goes back "
+          "to its USB console. 0: it stays."),
 ]
+BOARD_V3_KEYS = {q.key for q in BOARD_PARAMS if q.group >= 4}
 
 
 class SimParams:
@@ -513,10 +593,18 @@ class BoardParams:
     """The parameters page, editing the board (console version 2)."""
 
     kind = "board"
-    groups = BOARD_GROUPS
-    params = BOARD_PARAMS
     note = ("these are in the board's memory and go back to the built-in "
             "values when it is reset. the firmware has nowhere to store them.")
+
+    @property
+    def groups(self):
+        return BOARD_GROUPS if self.app.board_has_vehicle() else BOARD_GROUPS_V2
+
+    @property
+    def params(self):
+        if self.app.board_has_vehicle():
+            return BOARD_PARAMS
+        return [q for q in BOARD_PARAMS if q.key not in BOARD_V3_KEYS]
 
     def __init__(self, app):
         self.app = app
@@ -545,7 +633,7 @@ class BoardParams:
 
     def load(self, values):
         n = 0
-        for q in BOARD_PARAMS:
+        for q in self.params:
             if q.key in values:
                 ok, why = self.set(q, values[q.key])
                 if not ok:
@@ -985,7 +1073,7 @@ class ParamPage(Page):
     def update(self):
         cv, app = self.cv, self.app
         ps = app.param_source()
-        if ps.kind != self.ps.kind:
+        if ps.kind != self.ps.kind or len(ps.groups) != len(self.g_items):
             self.ps = ps
             self.group = ps.groups[0][0]
             self.sel = ps.params[0].key
@@ -1257,7 +1345,9 @@ class BoardPage(Page):
         if link is not None:
             self.sel = link.port
         elif self.sel not in names:
-            self.sel = names[-1] if names else None
+            # a real port before the firmware model, which is always listed
+            real = [n for n in names if n != boardlink.EMULATOR_PORT]
+            self.sel = real[-1] if real else (names[-1] if names else None)
 
     def pick(self, i):
         if self.app.board is None and i < len(self.ports):
@@ -1361,9 +1451,14 @@ class BoardPage(Page):
 
 # -------------------------------------------------------------------- app ---
 
+class VehiclePage(vehicle.VehiclePage, Page):
+    X1 = X1
+
+
 class App(tk.Tk):
     NAV = (("drive", "drive"), ("display", "display"), ("tune", "auto tune"),
-           ("params", "parameters"), ("scope", "scope"), ("board", "board"))
+           ("params", "parameters"), ("scope", "scope"), ("board", "board"),
+           ("vehicle", "vehicle"))
     LAMP = {"ready": B.MUTE, "run": B.GREEN, "stopping": B.YELLOW,
             "tuning": B.ORANGE, "fault": B.RED}
 
@@ -1383,6 +1478,7 @@ class App(tk.Tk):
         self.board = None
         self.btune = None               # auto tune for the board, if any
         self.board_targets = {"cbw": 400.0, "sbw": 20.0}
+        self._rejoin = None             # [port, give up at, try next at]: on CAN
         self._sim_params = SimParams(self)
         self._board_params = BoardParams(self)
         self.src = SimSource(self)
@@ -1397,7 +1493,7 @@ class App(tk.Tk):
         self._build_rail()
         self.pages = {cls.key: cls(self) for cls in
                       (DrivePage, DisplayPage, TunePage, ParamPage, ScopePage,
-                       BoardPage)}
+                       BoardPage, VehiclePage)}
         self.current = None
         self.show("drive")
 
@@ -1412,6 +1508,13 @@ class App(tk.Tk):
 
     def board_can_tune(self):
         return self.board is not None and (self.board.fw or 0) >= 2
+
+    def board_has_vehicle(self):
+        return self.board is not None and (self.board.fw or 0) >= 3
+
+    def rejoining(self):
+        """True while the board is away on CAN and expected back."""
+        return self._rejoin is not None
 
     def active_tune(self):
         """The auto tune the tune page is showing: the board's, when the
@@ -1436,7 +1539,7 @@ class App(tk.Tk):
         self.nav = {}
         for i, (key, label) in enumerate(self.NAV):
             self.nav[key] = B.RoundButton(
-                cv, 50, 158 + i * 58, 38, B.DARK3, lambda k=key: self.show(k),
+                cv, 50, 152 + i * 54, 38, B.DARK3, lambda k=key: self.show(k),
                 glyph=str(i + 1), glyph_size=15, label=label, label_side="e",
                 label_size=15, label_color=B.MUTE)
         cv.create_image(RAIL / 2, 584, image=B.grille(13, 8, 12, 5))
@@ -1613,7 +1716,7 @@ class App(tk.Tk):
     def _key(self, e):
         if isinstance(self.focus_get(), tk.Entry):
             return
-        if e.char and e.char in "123456":
+        if e.char and e.char in "1234567":
             self.show(self.NAV[int(e.char) - 1][0])
         elif e.keysym == "space":
             running = (self.board.running if self.board is not None else
@@ -1637,13 +1740,36 @@ class App(tk.Tk):
         disp = self.disp
 
         link = self.board
-        if link is not None and link.error:
+        if link is not None and link.error and link.away:
+            # It was told to change over to CAN, so the port going is the
+            # expected thing. Keep trying it until the board is back.
+            port = link.port
+            wait = float(link.params.get("canback", 10) or 600) + 12.0
+            self.disconnect("the board is on can. waiting for it to come "
+                            "back to usb ...")
+            self._rejoin = [port, now + wait, now + 1.0]
+            link = None
+        elif link is not None and link.error:
             self.disconnect(f"lost the board on {link.port}: {link.error}.")
             link = None
         elif link is not None and link.silent_for > 3.0:
             self.disconnect(f"{link.port} stopped answering. is it still "
                             "the foc firmware, and still plugged in?")
             link = None
+
+        if self._rejoin is not None and link is None and now >= self._rejoin[2]:
+            port, until, _next = self._rejoin
+            why = self.connect(port)
+            if not why:
+                self._rejoin = None
+                self.pages["board"].msg = "back from can."
+                link = self.board
+            elif now > until:
+                self._rejoin = None
+                self.pages["board"].msg = (f"{port} did not come back from "
+                                           f"can: {why}")
+            else:
+                self._rejoin[2] = now + 0.5
 
         if link is not None:
             # The simulator stands still while the board is the source.
@@ -1826,6 +1952,126 @@ def run_shots(app, outdir, port=None):
     app.after(100, step)
 
 
+def run_vehicle_shots(app, outdir, port):
+    """Pictures of the vehicle page. Sends throttle, brake, sensor and
+    parameter commands; never arms the outputs."""
+    from PIL import ImageGrab
+    os.makedirs(outdir, exist_ok=True)
+    app.attributes("-topmost", True)
+    page = app.pages["vehicle"]
+
+    def snap(name):
+        app.update()
+        x, y = app.winfo_rootx(), app.winfo_rooty()
+        ImageGrab.grab(bbox=(x, y, x + W, y + H)).save(
+            os.path.join(outdir, name + ".png"))
+
+    def script():
+        app.show("vehicle")
+        yield 600
+        snap("v1-not-connected")
+        why = app.connect(port)
+        if why:
+            with open(os.path.join(outdir, "vehicle-error.txt"), "w") as f:
+                f.write(why + "\n")
+            app.quit_app()
+            return
+        yield 1500
+        snap("v2-idle")
+        page._oneline()
+        page._drive_on()
+        yield 500
+        page._set_throttle(70, True)
+        yield 2500
+        snap("v3-throttle")
+        page._brake()
+        yield 250
+        snap("v4-braking")
+        yield 1500
+        page._drive_off()
+        yield 600
+        page._hall_kind(1)
+        yield 300
+        page._calibrate()
+        yield 1000
+        snap("v5-hall-calibrating")
+        while app.board.veh.get("ph") == 4:
+            yield 200
+        yield 800
+        page._sensor(1)
+        yield 400
+        page._drive_on()
+        yield 400
+        page._set_throttle(40, True)
+        yield 2500
+        page._pin_check()
+        yield 1500
+        snap("v6-hall-3144")
+        page._drive_off()
+        yield 1200
+        page._motor(1)
+        yield 600
+        page._sensor(2)
+        yield 400
+        page._weaken()
+        yield 300
+        page._drive_on()
+        yield 400
+        page._set_throttle(100, True)
+        yield 1200
+        snap("v7-hub-observer-starting")
+        yield 5000
+        snap("v8-hub-weakening")
+        page._drive_off()
+        yield 3000
+        page._weaken()
+        page._sensor(0)
+        yield 400
+        page._motor(0)
+        page._hall_kind(0)
+        page._oneline()
+        yield 800
+        app.show("params")
+        yield 400
+        app.pages["params"].pick_group(6)
+        yield 500
+        snap("v9-parameters")
+        app.show("vehicle")
+        if "--can" in sys.argv:
+            app.board.set_param("canback", 4)
+            yield 300
+            page._can_on()
+            yield 2000
+            snap("v10-on-can")
+            for _ in range(60):
+                if app.board is not None:
+                    break
+                yield 300
+            yield 1500
+            snap("v11-back-from-can")
+            if app.board is not None:
+                app.board.set_param("canback", 10)
+                yield 300
+        app.quit_app()
+
+    gen = script()
+
+    def step():
+        try:
+            delay = next(gen)
+        except StopIteration:
+            return
+        except Exception:
+            import traceback
+            with open(os.path.join(outdir, "vehicle-error.txt"), "w") as f:
+                traceback.print_exc(file=f)
+            app.quit_app()
+            return
+        app.after(delay, step)
+
+    app.after(100, step)
+
+
 def main(argv):
     if "--version" in argv:
         return 0
@@ -1836,9 +2082,11 @@ def main(argv):
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
-    if "--emulator" in argv or "emulator" in argv:
-        boardlink.emulator_enabled = True
     app = App()
+    if "--vehicle-shots" in argv:
+        port = (argv[argv.index("--port") + 1] if "--port" in argv
+                else boardlink.EMULATOR_PORT)
+        run_vehicle_shots(app, argv[argv.index("--vehicle-shots") + 1], port)
     if "--shots" in argv:
         port = argv[argv.index("--port") + 1] if "--port" in argv else None
         run_shots(app, argv[argv.index("--shots") + 1], port)

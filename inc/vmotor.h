@@ -36,7 +36,15 @@
    round number, so an accidentally-zero result cannot look like a pass. */
 #define VMOTOR_ENCODER_OFFSET   12345u
 
+/* Where the three Hall sensors sit on the stator, as an electrical angle.
+   Like the encoder offset, the firmware is not told: it calibrates. */
+#define VMOTOR_HALL_PHASE       4000u
+
 void vmotor_reset(void);
+
+/* 0: the gimbal motor everything was first built around. 1: a hub motor.
+   Changing it is changing the motor on the bench - the gains do not follow. */
+void vmotor_set_preset(int preset);
 
 /*
  * How the shaft behaves. All three are things a real test bench can do:
@@ -64,6 +72,17 @@ void vmotor_phase_currents(int16_t *ia, int16_t *ib);
 
 /* What the position sensor reports: the truth plus the unknown offset. */
 uint16_t vmotor_sensor_angle(void);
+
+/*
+ * What three Hall switches, 120 electrical degrees apart, read right now.
+ *
+ * width is how much of a turn each one stays on. A latch gives half a turn
+ * (32768). A unipolar switch - the 3144 and 3143 are that kind - turns on
+ * only while one pole is close enough and off again before the other
+ * arrives, so it stays on for less, and the six states it makes are not the
+ * same size. Whoever reads these has to cope with that.
+ */
+uint8_t  vmotor_hall(uint16_t width);
 
 /* Ground truth, for the test to check against - not for the controller. */
 uint16_t vmotor_true_angle(void);

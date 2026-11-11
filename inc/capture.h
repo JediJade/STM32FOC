@@ -28,6 +28,10 @@ typedef enum {
   CAPTURE_VQ,           /* applied q-axis voltage, Q15             */
   CAPTURE_SPEED,        /* speed, angle units per ms               */
   CAPTURE_ANGLE,        /* electrical angle the loop used          */
+  CAPTURE_OL,           /* the one-line pin, as run lengths        */
+  CAPTURE_HALL,         /* Hall state, 0..7                        */
+  CAPTURE_AERR,         /* angle used minus the model's true angle */
+  CAPTURE_IDFW,         /* field-weakening current                 */
   CAPTURE_CHANNELS
 } capture_channel;
 
@@ -41,6 +45,16 @@ typedef enum {
 /* divider: 1 = every control period, 20 = every speed-loop period. */
 void          capture_arm(capture_channel channel, uint16_t divider);
 void          capture_trigger(void);
+
+/*
+ * The one-line channel is a small logic analyser instead of a sampler. It
+ * reads the pin itself, every period, and stores one number per stretch of
+ * constant level: how many periods it lasted, negative while low. A frame
+ * is 194 of those, so it fits, with its timing, where 256 plain samples
+ * would not hold a third of it. oneline.c calls this as each frame begins:
+ * an armed record starts there, and a running one is complete.
+ */
+void          capture_ol_frame(void);
 
 /* Called from the control interrupt, once per period, after the loops. */
 void          capture_tick(void);

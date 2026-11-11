@@ -10,7 +10,7 @@ English: [README.md](README.md)
 
 ![หน้า drive](docs/drive.png)
 
-## หน้าต่าง ๆ (กดปุ่ม 1 ถึง 6)
+## หน้าต่าง ๆ (กดปุ่ม 1 ถึง 7)
 
 | | หน้า | ตัวจำลอง | บอร์ด |
 | --- | --- | --- | --- |
@@ -26,13 +26,54 @@ English: [README.md](README.md)
 
 กด space เพื่อ run และ stop ส่วน slider ใช้ได้ทั้งคลิก ลาก ล้อเมาส์ และปุ่มลูกศร
 
+## หน้า vehicle (firmware v0.3, console รุ่น 3)
+
+![หน้า vehicle](docs/vehicle.png)
+
+กดปุ่ม 7 หน้านี้รวมทุกอย่างที่ firmware v0.3 เพิ่มเข้ามา ใช้ได้กับบอร์ดที่มี
+console รุ่น 3 หรือกับ **firmware model** (พอร์ตชื่อ "emulator" ที่อยู่ในรายการ
+เสมอ) ซึ่งเป็นการคำนวณชุดเดียวกับ firmware ที่รันบนคอมพิวเตอร์ ไม่ต้องมีบอร์ด
+ถ้ายังไม่ได้เชื่อมต่ออะไร หน้านี้จะมีปุ่มให้เปิด firmware model ทันที
+
+| ส่วน | ทำอะไร |
+| --- | --- |
+| **คันเร่ง** | slider 0 ถึง 100 % ส่งเป็นค่า ADC แบบเดียวกับที่ขา PA2 จะอ่านได้ firmware จึงทำ calibrate, ramp และตรวจสายหลุดเหมือนของจริง |
+| **drive / stop / brake** | `drive` จะเริ่มก็ต่อเมื่อเห็นคันเร่งถูกปล่อยแล้ว `brake` ตัดคันเร่งและเบรคแบบ regen |
+| **rotor angle from** | เลือก encoder / hall / observer (ไม่มีเซ็นเซอร์) เปลี่ยนได้เมื่อหยุดขับ และแสดงมุมที่ใช้เทียบกับ rotor จริงของโมเดล |
+| **hall sensors** | เลือกชนิด `latch` หรือ `3144 / 3143` แล้วกด calibrate เพื่อให้ firmware วัดมุมขอบทั้ง 6 เอง |
+| **motor model** | เปลี่ยนมอเตอร์จำลองใน firmware (gimbal / hub) พร้อมโหลด gain ที่เหมาะกับมอเตอร์นั้น |
+| **field weakening** | เปิดหรือปิด แสดงกระแสแกน d ข้างกระแสแรงบิด |
+| **dashboard** | เปิดสัญญาณ one-line ที่ขา PB10 และถอดรหัสเฟรม 12 ไบต์ ปุ่ม `check at the pin` อัดสัญญาณจากขาจริงแล้วถอดรหัสกลับ |
+| **can bus** | ไฟแสดงผลทดสอบ loopback ตอนเปิดเครื่อง ปุ่ม `change over to can` สลับจาก USB ไป CAN พอร์ตจะหายไปและโปรแกรมจะต่อใหม่เองเมื่อบอร์ดกลับมา |
+
+![hall แบบ 3144](docs/vehicle-hall.png)
+![field weakening กับมอเตอร์ hub แบบไม่มีเซ็นเซอร์](docs/vehicle-weakening.png)
+
+ผลบนบอร์ดจริง (COM13, 2026-11-10) จาก `checks\v3_features.py COM13 --can` ผ่าน 33 จาก 33 ข้อ:
+
+- 3144 / 3143 เป็น Hall แบบสวิตช์ขั้วเดียว ช่วงสัญญาณจึงไม่เท่ากัน: calibrate
+  พบช่วง 92° และ 28° สลับกัน ขอบแต่ละจุดคลาดไม่เกิน 0.11°
+- observer เข้าควบคุมหลังสั่ง 378 ms มุมคลาดไม่เกิน 0.9°
+- field weakening กับมอเตอร์ hub: ความเร็วสูงสุด 5280 เป็น 10220 units/ms
+- one-line: อ่านกลับจากขา PB10 ได้ 194 ขอบ, T = 500 µs, checksum ถูกต้อง
+- CAN: ทดสอบ loopback ผ่าน, สลับไป CAN แล้วกลับมา USB เองใน 3.5 วินาที
+  โดยค่าพารามิเตอร์ยังอยู่ครบ
+
+**ข้อจำกัดที่ต้องรู้:** มอเตอร์ยังเป็นโมเดลใน firmware และยังไม่ได้ต่อคันเร่ง
+เบรค Hall, dashboard หรือ CAN transceiver ของจริงเข้ากับขาใหม่เลย
+ค่าพารามิเตอร์และตาราง Hall หายเมื่อ reset และผัง 12 ไบต์ของ one-line
+ต่างกันตามยี่ห้อ dashboard รายละเอียดทั้งหมดอยู่ใน [README หลัก](../README.md)
+
+ขาที่ใช้: คันเร่ง PA2, เบรค PB11 (ต่อลงกราวด์), Hall PB5 / PB6 / PB7,
+one-line PB10, CAN PB8 (รับ) / PB9 (ส่ง)
+
 ## วิธีใช้
 
 ```
 dist\FOC.exe                     เปิดโปรแกรม (หลังรัน build-exe.cmd)
 python foc.py                    เปิดจาก source ต้องมี Pillow
-python foc.py --emulator         เพิ่มพอร์ตชื่อ "emulator" คือการคำนวณของ firmware
-                                 ที่เขียนด้วย Python ใช้ลองเมื่อไม่มีบอร์ด
+python foc.py --vehicle-shots pictures [--port COM13] [--can]
+                                 บันทึกภาพหน้า vehicle กับ firmware model หรือบอร์ด
 python foc.py --selftest out.txt รันการตรวจสอบตัวจำลอง 16 ข้อ แล้วเขียนผลลงไฟล์
 python foc.py --shots pictures   บันทึกภาพทุกหน้า
 python foc.py --shots pictures --port COM13   บันทึกภาพหน้าที่ต่อกับบอร์ดด้วย

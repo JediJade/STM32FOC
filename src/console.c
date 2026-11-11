@@ -8,14 +8,20 @@
 #include "selftest.h"
 #include "safety.h"
 #include "capture.h"
+#include "drive.h"
+#include "sensor.h"
+#include "oneline.h"
+#include "canbus.h"
 #include "stm32f103xb.h"
 
 /*
  * What a host can ask this firmware for. 1 was the console as first written
  * (it has no `ver`, and answers "? for help"); 2 added settable gains, the
- * d-axis target, voltage mode, the recorder and the `x` line.
+ * d-axis target, voltage mode, the recorder and the `x` line; 3 added the
+ * throttle and brake, field weakening, the sensor selector, Hall
+ * calibration, the one-line output, CAN and the `v` line.
  */
-#define CONSOLE_VERSION   2
+#define CONSOLE_VERSION   3
 
 /* ------------------------------------------------------- formatting ----- */
 
@@ -122,6 +128,7 @@ static char    cmd[64];
 static uint8_t cmd_len;
 static uint8_t telemetry;
 static uint32_t next_telem;
+static uint8_t can_request;
 
 static int32_t parse_int(const char *s)
 {
@@ -173,7 +180,16 @@ static void print_help(void)
   line("  id <n>     d-axis current target (Q15), used in current mode");
   line("  vd <n>     voltage mode: v_d = n, v_q = 0, no controller");
   line("  cap <ch> <div>  arm the recorder: id iq vd vq spd ang");
+  line("             also ol (one-line pin), hall, aerr, idfw");
   line("  dump       print what the recorder holds");
+  line("  v          throttle, brake, sensor, weakening");
+  line("  th <n>     throttle reading in place of the pin, 0..4095");
+  line("  brk <0|1>  brake in place of the pin");
+  line("  drv <0|1>  throttle mode on / off");
+  line("  hallcal    learn where the Hall edges are");
+  line("  hall       the edges it learned");
+  line("  olf        the one-line frame last sent");
+  line("  can        CAN state; `can on` changes over to it");
 }
 
 static void print_state(void)
@@ -257,7 +273,8 @@ static void print_tests(void)
 typedef enum {
   P_CKP = 0, P_CKI, P_CDEC, P_CCROSS, P_CEMF,
   P_SKP, P_SKI, P_SIMAX, P_PKP,
-  P_COUNT
+  P_DRIVE,                              /* drive.h's, in its order, from here */
+  P_COUNT = P_DRIVE + DP_COUNT
 } param_id;
 
 typedef struct {
@@ -269,13 +286,39 @@ typedef struct {
 static const param_def params[P_COUNT] = {
   { "ckp",     0,  262144 },    /* current Kp, Q15: up to 8.0            */
   { "cki",     0,   32767 },    /* current Ki, Q15 per 50 us period      */
-  { "cdec",    0,       1 },    /* feed-forward decoupling off / on      */
-  { "ccross",  0,   32767 },    /* cross-coupling feed-forward, Q15      */
-  { "cemf",    0,   32767 },    /* back-EMF feed-forward, Q15            */
+  { "cdec",    0,       2 },    /* feed-forward: off, fixed, with speed  */
+  { "ccross",  0,   65535 },    /* cross-coupling feed-forward, Q15      */
+  { "cemf",    0,  131071 },    /* back-EMF feed-forward, Q15            */
   { "skp",     0, 1048576 },    /* speed Kp, Q15: up to 32.0             */
   { "ski",     0,  131072 },    /* speed Ki, Q15 per 1 ms tick           */
   { "simax", 256,   29491 },    /* current the speed loop may ask for    */
   { "pkp",     0,   32768 },    /* position Kp, Q15                      */
+
+  /* drive.h explains each. The order is DP_VLIM onwards. */
+  { "vlim",    4096,  29491 },
+  { "fw",         0,  16384 },
+  { "fwstart", 16384, 32767 },
+  { "sens",       0,      2 },
+  { "hsrc",       0,      1 },
+  { "hwid",   22000,  43000 },
+  { "sla",      128,  32767 },
+  { "slmin",    100,   3000 },
+  { "slcur",      0,  16384 },
+  { "slramp",   100,  20000 },
+  { "insrc",      0,      1 },
+  { "thmin",      0,   4095 },
+  { "thmax",      0,   4095 },
+  { "thmode",     0,      1 },
+  { "thramp",     1,  32767 },
+  { "drvspd",   100,  16000 },
+  { "regen",      0,  16384 },
+  { "mot",        0,      1 },
+  { "ol",         0,      1 },
+  { "olt",        5,     40 },
+  { "canid",      1,    127 },
+  { "canbr",    125,   1000 },
+  { "canper",     5,   1000 },
+  { "canback",    0,    600 },
 };
 
 static int32_t param_get(param_id id)
@@ -284,10 +327,14 @@ static int32_t param_get(param_id id)
   int32_t b = 0;
   int32_t c = 0;
 
+  if (id >= P_DRIVE) {
+    return drive_p[id - P_DRIVE];
+  }
+
   switch (id) {
   case P_CKP:    foc_loop_get_gains(&a, &b);        return a;
   case P_CKI:    foc_loop_get_gains(&a, &b);        return b;
-  case P_CDEC:   return (foc_loop_decouple() != 0) ? 1 : 0;
+  case P_CDEC:   return foc_loop_decouple();
   case P_CCROSS: foc_loop_get_feedforward(&a, &b);  return a;
   case P_CEMF:   foc_loop_get_feedforward(&a, &b);  return b;
   case P_SKP:    outer_get_gains(&a, &b, &c);       return a;
@@ -310,6 +357,11 @@ static void param_set(param_id id, int32_t v)
   /* A gain is several words in a controller's state. The control interrupt
      must not run between them and see half of the old with half of the new. */
   __disable_irq();
+  if (id >= P_DRIVE) {
+    (void)drive_param_set((drive_param)(id - P_DRIVE), v);
+    __enable_irq();
+    return;
+  }
   switch (id) {
   case P_CKP:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(v, b);        break;
   case P_CKI:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(a, v);        break;
@@ -322,7 +374,39 @@ static void param_set(param_id id, int32_t v)
   case P_PKP:    outer_set_pos_kp(v);                                                break;
   default:                                                                           break;
   }
+  sensor_derive();              /* the observer scales by cemf */
   __enable_irq();
+}
+
+int console_version(void)
+{
+  return CONSOLE_VERSION;
+}
+
+int console_param_count(void)
+{
+  return (int)P_COUNT;
+}
+
+int32_t console_param_get(int index)
+{
+  return ((index >= 0) && (index < (int)P_COUNT)) ? param_get((param_id)index) : 0;
+}
+
+void console_param_set(int index, int32_t value)
+{
+  if ((index >= 0) && (index < (int)P_COUNT)) {
+    param_set((param_id)index, value);
+  }
+}
+
+int console_can_requested(void)
+{
+  if (can_request != 0U) {
+    can_request = 0U;
+    return 1;
+  }
+  return 0;
 }
 
 static void print_param(param_id id)
@@ -376,7 +460,7 @@ static void cmd_set(const char *args)
 /* -------------------------------------------------------- recorder ------ */
 
 static const char *const cap_names[CAPTURE_CHANNELS] = {
-  "id", "iq", "vd", "vq", "spd", "ang"
+  "id", "iq", "vd", "vq", "spd", "ang", "ol", "hall", "aerr", "idfw"
 };
 
 static void cmd_cap(const char *args)
@@ -396,7 +480,7 @@ static void cmd_cap(const char *args)
       return;
     }
   }
-  line("? cap <id|iq|vd|vq|spd|ang> <divider>");
+  line("? cap <id|iq|vd|vq|spd|ang|ol|hall|aerr|idfw> <divider>");
 }
 
 static void cmd_dump(void)
@@ -462,6 +546,113 @@ static void print_extra(void)
   emit(buf, (uint16_t)(p - buf));
 }
 
+/* Throttle, brake, sensor and weakening in one line, for a host to poll. */
+static void print_vehicle(void)
+{
+  char buf[120];
+  char *p;
+
+  p = put_str(buf, "v th ");
+  p = put_int(p, drive_throttle_raw());
+  p = put_str(p, " thr ");
+  p = put_int(p, drive_throttle());
+  p = put_str(p, " brk ");
+  p = put_int(p, drive_brake());
+  p = put_str(p, " veh ");
+  p = put_int(p, drive_state());
+  p = put_str(p, " vflt ");
+  p = put_int(p, drive_fault());
+  p = put_str(p, " sens ");
+  p = put_int(p, sensor_kind_get());
+  p = put_str(p, " ph ");
+  p = put_int(p, sensor_phase());
+  p = put_str(p, " hall ");
+  p = put_int(p, (int32_t)sensor_hall_now());
+  p = put_str(p, " cal ");
+  p = put_int(p, sensor_cal_result());
+  p = put_str(p, " idfw ");
+  p = put_int(p, drive_fw_d());
+  p = put_str(p, " aerr ");
+  p = put_int(p, sensor_angle_error());
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+static void print_hall(void)
+{
+  char buf[120];
+  char *p;
+  int  c;
+
+  p = put_str(buf, "hall ok ");
+  p = put_int(p, sensor_hall_valid());
+  p = put_str(p, " err ");
+  p = put_int(p, (int32_t)sensor_hall_errors());
+  p = put_str(p, " e");
+  for (c = 0; c < 8; c++) {
+    *p++ = ' ';
+    p = put_int(p, sensor_hall_edge(c));
+  }
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+static void print_oneline(void)
+{
+  static const char digits[] = "0123456789abcdef";
+  const uint8_t *f = oneline_frame();
+  char buf[64];
+  char *p = put_str(buf, "olf");
+  uint32_t i;
+
+  for (i = 0U; i < ONELINE_BYTES; i++) {
+    *p++ = ' ';
+    *p++ = digits[f[i] >> 4];
+    *p++ = digits[f[i] & 15U];
+  }
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+static void print_can(void)
+{
+  char buf[96];
+  char *p;
+
+  p = put_str(buf, "can test ");
+  p = put_int(p, (int32_t)can_test_result());
+  p = put_str(p, " mode ");
+  p = put_int(p, can_active());
+  p = put_str(p, " id ");
+  p = put_int(p, drive_p[DP_CANID]);
+  p = put_str(p, " br ");
+  p = put_int(p, drive_p[DP_CANBR]);
+  p = put_str(p, " rx ");
+  p = put_int(p, (int32_t)can_rx_count());
+  p = put_str(p, " tx ");
+  p = put_int(p, (int32_t)can_tx_count());
+  p = put_str(p, " drop ");
+  p = put_int(p, (int32_t)can_drop_count());
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+static void reply_int(const char *word, int32_t v)
+{
+  char buf[40];
+  char *p = put_str(buf, word);
+
+  *p++ = ' ';
+  p = put_int(p, v);
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
 static void dispatch(void)
 {
   const char *arg;
@@ -476,51 +667,28 @@ static void dispatch(void)
   if ((cmd[0] == '?') || starts_with(cmd, "help")) {
     print_help();
   } else if (starts_with(cmd, "iq ")) {
-    int32_t v = parse_int(&cmd[3]);
-
-    if (v > 16384) { v = 16384; }
-    if (v < -16384) { v = -16384; }
     __disable_irq();
-    outer_set_mode(OUTER_MODE_OFF);
-    vmotor_set_mech(VM_MECH_FREE, 0);
-    foc_loop_set_mode(LOOP_MODE_CURRENT);
-    foc_loop_set_target((int16_t)v);
-    capture_trigger();
+    drive_torque(parse_int(&cmd[3]));
     __enable_irq();
     line("current mode");
   } else if (starts_with(cmd, "spd ")) {
-    int32_t v = parse_int(&cmd[4]);
-
-    if (v >  OUTER_SPEED_MAX) { v =  OUTER_SPEED_MAX; }
-    if (v < -OUTER_SPEED_MAX) { v = -OUTER_SPEED_MAX; }
     __disable_irq();
-    vmotor_set_mech(VM_MECH_FREE, 0);
-    foc_loop_set_target_d(0);
-    foc_loop_set_mode(LOOP_MODE_CURRENT);
-    outer_set_mode(OUTER_MODE_SPEED);
-    outer_set_speed_ref(v);
-    capture_trigger();
+    drive_speed(parse_int(&cmd[4]));
     __enable_irq();
     line("speed mode");
   } else if (starts_with(cmd, "pos ")) {
-    int32_t v = parse_int(&cmd[4]);
-
-    vmotor_set_mech(VM_MECH_FREE, 0);
-    foc_loop_set_target_d(0);
-    foc_loop_set_mode(LOOP_MODE_CURRENT);
-    outer_set_mode(OUTER_MODE_POSITION);
-    outer_set_position_ref((uint16_t)(foc_loop_angle() + (uint16_t)v));
+    __disable_irq();
+    drive_position(parse_int(&cmd[4]));
+    __enable_irq();
     line("position mode");
   } else if (starts_with(cmd, "align")) {
     line("aligning...");
     selftest_run_align();
     print_tests();
   } else if (starts_with(cmd, "off")) {
-    outer_set_mode(OUTER_MODE_OFF);
-    foc_loop_set_mode(LOOP_MODE_IDLE);
-    foc_loop_set_target(0);
-    foc_loop_set_target_d(0);
-    foc_loop_set_voltage(0, 0);
+    __disable_irq();
+    drive_off();
+    __enable_irq();
     safety_disarm();
     line("idle, outputs off");
   } else if (starts_with(cmd, "on")) {
@@ -538,7 +706,15 @@ static void dispatch(void)
     }
   } else if (starts_with(cmd, "clear")) {
     safety_clear_fault();
+    __disable_irq();
+    drive_clear();
+    __enable_irq();
     line("fault cleared");
+  } else if (after_word(cmd, "hallcal") != 0) {
+    line((sensor_cal_start() == 0) ? "hall calibration started"
+                                   : "? stop the drive first");
+  } else if (after_word(cmd, "hall") != 0) {
+    print_hall();
   } else if (starts_with(cmd, "hang")) {
     line("hanging: the watchdog should reset the board");
     for (;;) {
@@ -574,25 +750,57 @@ static void dispatch(void)
     __enable_irq();
     line("id target");
   } else if ((arg = after_word(cmd, "vd")) != 0) {
-    int32_t v = parse_int(arg);
-
-    /* Half scale at most. This is an open-loop voltage: on a real winding
-       the current it makes is v / R with nothing watching, so the ceiling
-       is here, in the one place the number comes in. */
-    if (v > 16384) { v = 16384; }
-    if (v < -16384) { v = -16384; }
     __disable_irq();
-    outer_set_mode(OUTER_MODE_OFF);
-    vmotor_set_mech(VM_MECH_FREE, 0);
-    foc_loop_set_voltage((int16_t)v, 0);
-    foc_loop_set_mode(LOOP_MODE_VOLTAGE);
-    capture_trigger();
+    drive_voltage(parse_int(arg));
     __enable_irq();
     line("voltage mode");
   } else if ((arg = after_word(cmd, "cap")) != 0) {
     cmd_cap(arg);
   } else if (after_word(cmd, "dump") != 0) {
     cmd_dump();
+  } else if ((arg = after_word(cmd, "th")) != 0) {
+    drive_sim_throttle(parse_int(arg));
+    reply_int("th", drive_throttle_raw_sim());
+  } else if ((arg = after_word(cmd, "brk")) != 0) {
+    drive_sim_brake(parse_int(arg) != 0);
+    reply_int("brk", (parse_int(arg) != 0) ? 1 : 0);
+  } else if ((arg = after_word(cmd, "drv")) != 0) {
+    if (parse_int(arg) != 0) {
+      int r;
+
+      __disable_irq();
+      r = drive_vehicle_on();
+      __enable_irq();
+      line((r == 0) ? "drive on: release the throttle to start"
+         : (r == 1) ? "? stop the drive first"
+                    : "refused: throttle fault, clear it first");
+    } else {
+      __disable_irq();
+      drive_off();
+      __enable_irq();
+      line("drive off");
+    }
+  } else if (after_word(cmd, "olf") != 0) {
+    print_oneline();
+  } else if ((arg = after_word(cmd, "can")) != 0) {
+    if (starts_with(arg, "on")) {
+      char buf[72];
+      char *p = put_str(buf, "can on: usb closes, back after ");
+
+      p = put_int(p, drive_p[DP_CANBACK]);
+      p = put_str(p, " s without a frame");
+      *p++ = '\r';
+      *p++ = '\n';
+      emit(buf, (uint16_t)(p - buf));
+      __disable_irq();
+      drive_off();
+      __enable_irq();
+      can_request = 1U;
+    } else {
+      print_can();
+    }
+  } else if (after_word(cmd, "v") != 0) {
+    print_vehicle();
   } else if (cmd[0] == 'x') {
     print_extra();
   } else if (cmd[0] == 's') {
@@ -612,6 +820,7 @@ void console_init(void)
   cmd_len    = 0U;
   telemetry  = 0U;
   next_telem = 0U;
+  can_request = 0U;
 }
 
 void console_poll(void)

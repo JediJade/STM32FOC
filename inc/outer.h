@@ -53,6 +53,17 @@ void    outer_set_gains(int32_t speed_kp, int32_t speed_ki, int32_t iq_max);
 void    outer_get_gains(int32_t *speed_kp, int32_t *speed_ki, int32_t *iq_max);
 void    outer_set_pos_kp(int32_t kp);
 int32_t outer_pos_kp(void);
+/* 1: the measured speed is sensor_speed(), not the angle's difference. */
+void    outer_use_sensor_speed(int on);
+
+/* Where outer_tick() is in its count of twenty: 0 right after the call
+   that did the 1 kHz work. For what has to run in step with it. */
+uint8_t outer_phase(void);
+
+/* Empty the speed integrator, and leave the mode alone. For the stretch in
+   which the speed being measured is one this firmware is itself forcing. */
+void    outer_hold(void);
+
 int32_t outer_speed_ref(void);
 int32_t outer_iq_ref(void);
 uint32_t outer_cycles(void);        /* cost of the last 1 kHz update */

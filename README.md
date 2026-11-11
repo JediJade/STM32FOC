@@ -29,6 +29,10 @@ the monitor window, `--check`, the `.exe` build and the SWD reader.
 | `src/outer.c` | speed and position loops, cascaded at 1 kHz |
 | `src/usb_cdc.c` | USB CDC-ACM device on the registers: no HAL, no middleware |
 | `src/console.c` | line-based console on that port: commands and telemetry |
+| `src/drive.c` | v0.3: throttle, brake, field weakening - the layer that makes it a vehicle drive |
+| `src/sensor.c` | v0.3: the rotor angle from Hall sensors or from an observer, and Hall calibration |
+| `src/oneline.c` | v0.3: the one-line (SIF) dashboard signal |
+| `src/canbus.c` | v0.3: CAN on the registers, its protocol, and its power-on loopback test |
 | `src/safety.c` | the gate on MOE: arming rules, latched faults, watchdog |
 | `read-selftest.py` | host-side reader: parses the field order out of the header and the address out of the ELF |
 | `src/selftest.c` | the eight measurements |
@@ -234,6 +238,181 @@ swapped, which needed one thing HID never did: an EP0 **OUT** data stage.
 `SET_LINE_CODING` sends seven bytes to the device, and a stack that stalls
 every request with an OUT payload - as the HID one did, because it never
 needed to receive on EP0 - will not finish enumerating as CDC.
+
+## Version 0.3: the vehicle side (console version 3)
+
+Seven things a drive needs before it can sit in a vehicle. All of them are in
+the firmware and all of them have a page in `studio/`. What they were tested
+against is said plainly, because it matters: **the motor is still the model
+inside the firmware, and nothing was connected to the new pins.** The
+controller code runs on the real chip, at the real rate; the throttle, the
+brake lever, the Hall sensors, a dashboard and a CAN bus were not on the
+bench.
+
+| | what | where |
+| --- | --- | --- |
+| throttle | analog input, calibrated, ramped, with a broken-wire fault | PA2 (0 to 3.3 V), or `th <n>` |
+| brake | cuts the throttle and regenerates, fading out near standstill | PB11 to ground, or `brk <0/1>` |
+| field weakening | negative d-axis current when the voltage runs out | `fw`, `fwstart`, `vlim` |
+| sensor selector | encoder, Hall sensors, or no sensor (observer) | `sens` 0 / 1 / 2 |
+| Hall sensors 3144 / 3143 | three open-collector inputs, edges learned by calibration | PB5, PB6, PB7 (pulled up) |
+| one-line dashboard | 12-byte SIF frame every 170 ms | PB10, push-pull |
+| CAN | protocol below; USB and CAN change over in software | PB8 receive, PB9 transmit |
+
+```
+v               th N thr N brk N veh N vflt N sens N ph N hall N cal N idfw N aerr N
+th <n>          throttle reading in place of the pin, 0..4095 ADC counts
+brk <0|1>       brake in place of the pin
+drv <0|1>       throttle mode on / off. It starts only once the throttle is released
+hallcal         learn where the six Hall edges are (about 1.7 s)
+hall            hall ok N err N e <eight edge angles, -1 = state does not occur>
+olf             the one-line frame last sent, twelve bytes in hex
+can             can test N mode N id N br N rx N tx N drop N
+can on          change over to CAN: the USB console closes
+cap ol|hall|aerr|idfw <div>     four more recorder channels
+```
+
+Twenty-four more parameters (`get` lists 33). The first nine are as they were,
+except that `cdec` now has a third setting and two limits are wider:
+
+| parameter | what it is | built-in | range |
+| --- | --- | --- | --- |
+| `cdec` | feed-forward: 0 off, 1 fixed (as before), 2 scaled by measured speed | 1 | 0 - 2 |
+| `ccross`, `cemf` | the two feed-forward terms, as they are at 6560 units/ms | 20580, 6554 | to 65535, 131071 |
+| `vlim` | voltage either axis may use, Q15 | 29491 | 4096 - 29491 |
+| `fw` | most field-weakening current, Q15; 0 = off | 0 | 0 - 16384 |
+| `fwstart` | weakening starts at this fraction of `vlim`, Q15 | 29491 | 16384 - 32767 |
+| `sens` | 0 encoder, 1 Hall, 2 observer. Only while idle | 0 | 0 - 2 |
+| `hsrc` | Hall signals: 0 the model's, 1 the pins | 0 | 0 - 1 |
+| `hwid` | how much of a turn a model Hall sensor stays on | 32768 | 22000 - 43000 |
+| `sla` | observer: control period over L/R, Q15 | 1638 | 128 - 32767 |
+| `slmin` | observer takes over above this speed, units/ms | 600 | 100 - 3000 |
+| `slcur` | current while the rotor is on the forced angle | 4000 | 0 - 16384 |
+| `slramp` | how fast the forced angle speeds up, units/ms per s | 2000 | 100 - 20000 |
+| `insrc` | throttle and brake: 0 console, 1 pins | 0 | 0 - 1 |
+| `thmin`, `thmax` | throttle reading released / fully open, ADC counts | 900, 3300 | 0 - 4095 |
+| `thmode` | throttle is 0 torque, 1 speed | 0 | 0 - 1 |
+| `thramp` | throttle may rise this much per ms, of 32767 | 66 | 1 - 32767 |
+| `drvspd` | top speed under throttle, units/ms | 6560 | 100 - 16000 |
+| `regen` | braking current, Q15 | 4096 | 0 - 16384 |
+| `mot` | the model's motor: 0 gimbal, 1 hub. Only while idle | 0 | 0 - 1 |
+| `ol`, `olt` | one-line output on / off, and its time unit in 50 us periods | 0, 10 | 0 - 1, 5 - 40 |
+| `canid`, `canbr` | node number; bit rate 125, 250, 500 or 1000 kbit/s | 1, 500 | |
+| `canper` | status frames every this many ms | 20 | 5 - 1000 |
+| `canback` | on CAN, back to USB after this many s without a frame; 0 never | 10 | 0 - 600 |
+
+### What each one does, and what the board showed
+
+`studio/checks/v3_features.py COM13 --can` runs all of this through the
+console and prints one line per check. On the board, 2026-11-10: 33 of 33.
+
+**Throttle and brake** (`src/drive.c`). The reading is scaled between
+`thmin` and `thmax` with the bottom thirty-second ignored, rises at
+`thramp` and falls at once. A reading under half of `thmin`, or more than
+half way from `thmax` to full scale, for 50 ms, is a wire and not a
+position: the drive stops and latches `vflt` until `clear`. `drv 1` does
+not start until it has seen the throttle released. The brake always wins:
+throttle to zero, then `regen` of braking current, fading out below 300
+units/ms so that it cannot drive the rotor backwards. On the board: full
+throttle held at 6784 units/ms against a limit of 6560 (the torque is taken
+away over the next 256), braking current -3809 counts 12 ms after the
+brake, standstill without reversing.
+
+**Field weakening.** Once the loop uses more than `fwstart` of `vlim`,
+an integrator raises negative d-axis current, up to `fw`. The model's
+first motor is the wrong motor to show it on - its winding is nearly all
+resistance at any speed it reaches, so the current costs more voltage than
+it frees. So the model has a second motor (`mot 1`: L/R 5 ms, five times
+the back-EMF, a heavier rotor with rolling resistance). On that one, on
+the board: top speed 5280 units/ms without, 10220 with (i_d -8192). For
+this the feed-forward had to follow the speed (`cdec 2`): it was two
+constants, right at one speed.
+
+**Sensor selector, Hall sensors, observer** (`src/sensor.c`). The 3144
+and 3143 are unipolar switches, not latches: each is on for less than half
+a turn, so the six states are not 60 degrees each. The edges are therefore
+measured, not assumed: `hallcal` turns a field slowly one way and back,
+the rotor follows, and the field angle at each edge is written down, the
+two directions averaged. With model sensors on for 148 degrees it found
+sectors of 92 and 28 degrees, each edge within 0.11 degree of where the
+model has it. Between edges the angle is carried at the speed the last two
+sectors took. With the speed loop at 3000 units/ms the angle in use stayed
+within -0.3 to +2.3 degrees of the model's rotor. The observer takes the
+back-EMF from the applied voltage and the measured current and follows it
+with a phase-locked loop; below `slmin` the rotor is dragged at a forced
+angle with `slcur`. On the board it took over 378 ms after `spd 3000` and
+then stayed within 0.9 degree; on the second motor, 0.7 degree.
+
+**One line** (`src/oneline.c`). Idle low; sync 31 T low and 1 T high; a
+zero is 2 T low, 1 T high and a one the other way round; twelve bytes,
+most significant bit first; the last is the exclusive-or of the rest.
+`cap ol 1` records the pin itself as run lengths, so the waveform can be
+checked with nothing connected: read back from PB10, 194 level changes,
+T exactly 500 us, sync -310 / +10 periods, frame `08 61 00 40 00 1b 00 00
+89 00 00 bb`, checksum good. Displays do not agree on what the bytes
+mean; the layout is the common one and is all in `oneline_build()`.
+
+**CAN** (`src/canbus.c`). On this chip the CAN controller and the USB
+device share memory and cannot both be on. `can on` shuts USB down, holds
+D+ low so the host sees an unplug, and brings CAN up on PB8 / PB9. It goes
+back on a command frame with mode 0x55, or by itself after `canback`
+seconds without a frame - so a board with nothing on its CAN pins comes
+back. On the board: the port was away for 3.5 s with `canback 3`, came
+back with its parameters intact, and the reset cause had not changed. So
+that the controller is not code that has only been compiled, it runs in
+loopback before USB starts at power-on: a frame out and back unchanged,
+then a parameter request to itself answered with the right value (`can`
+reads `test 7`). That test first read 0: left on its reset mapping the
+controller listens on PA11, which is USB's D- line, held low by the host,
+and it never acknowledged initialisation.
+
+```
+0x100+n  in    command     [mode, flags, value lo, value hi]
+                 mode 0 off, 1 torque current, 2 speed, 3 throttle 0..32767
+                 (flags bit0 = brake), 0x55 back to USB
+0x200+n  in    parameter   [op, index, 0, 0, value int32]   op 1 read, 2 write
+0x300+n  out   status 1    speed, iq, id (int16), state, fault
+0x400+n  out   status 2    vd, vq (int16), angle (uint16), throttle/128, flags
+0x500+n  out   reply       [op | 0x80, index, 0, 0, value]
+0x700+n  out   heartbeat   [console version, vehicle state], once a second
+```
+
+A drive told to turn that hears no command for half a second stops. The
+outputs cannot be armed over CAN. A transceiver is needed to reach a bus,
+and none was fitted: on the bench every status frame was dropped unsent.
+
+### What it cost, and two things fixed on the way
+
+- **The loop got faster, not slower.** The first build with all of this
+  took 1897 cycles a period against a bar of 1800 and failed its own
+  timing test. Park and inverse Park each looked up the same sine and
+  cosine; so did the model. Looked up once and shared, with the two
+  transforms inlined, the period is 1441 cycles (1731 before this version).
+  Self-test result unchanged: `0xbe`, the two that need jumpers.
+- **Without a host the board reset ten times a second.** The main loop's
+  LED blink waited 150 ms and more inside `delay_ms()` with a 100 ms
+  watchdog running. Unnoticed, because with a PC attached that branch is
+  never taken - until coming back from CAN took it. Those waits now
+  refresh the watchdog.
+- Flash 23.9 KB of 64, RAM 1.8 KB of 20.
+
+### What is not there
+
+- No real throttle, brake, Hall sensor, dashboard or transceiver has been
+  connected. `hsrc 1` and `insrc 1` read the pins; nothing has driven them.
+- The parameters still go back to the built-in values at reset - the Hall
+  table too, so calibration is per power-up.
+- With Hall sensors the speed is as old as the last sector. On the light
+  first motor with uneven (3144-like) sectors the speed loop hunts below
+  about 1500 units/ms; on the second it holds 1000 and hunts at 300.
+  Torque mode, which is what a throttle is, does not have this problem.
+- Below `slmin` the observer's rotor is on a forced angle with no damping
+  of its own. It starts and it turns; it is not a position hold.
+  At the weakened top speed of the second motor its angle was 4.4 degrees
+  behind the model's rotor.
+- No bus voltage is measured, so the dashboard's battery byte is zero and
+  regeneration has nothing watching where the energy goes.
+- `align` still ends in a watchdog reset.
 
 ## The gate on MOE
 

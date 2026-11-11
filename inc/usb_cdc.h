@@ -24,6 +24,11 @@
 
 void usb_cdc_init(void);
 
+/* Power the peripheral down and forget the host. usb_cdc_init() brings it
+   back. The CAN controller shares this peripheral's memory, so this is how
+   the firmware makes room for it. */
+void usb_cdc_stop(void);
+
 /* 1 once the host has configured the device */
 int  usb_cdc_configured(void);
 

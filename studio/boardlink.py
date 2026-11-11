@@ -41,8 +41,18 @@ There are two consoles in the field, and `ver` tells them apart:
           dump             the record: a header, lines of d <8 values>, cap end
           x                x vd N  vq N  loop N  outer N  cap N  n N
 
-With console 2 the loop mode is read from `x` instead of guessed, and `spd`
-is live in every mode, so the two workarounds below apply to console 1 only.
+    3   adds the vehicle side - see ../README.md for each:
+          v                throttle, brake, sensor, weakening, in one line
+          th <n>  brk <n>  drv <n>     throttle and brake in place of the pins
+          hallcal  hall    learn, and list, where the Hall edges are
+          olf              the one-line dashboard frame last sent
+          can  /  can on   CAN state  /  change over to CAN: the port goes
+                           away, and comes back when the board returns to USB
+        and twenty-four more parameters, and four more recorder channels.
+
+With console 2 and later the loop mode is read from `x` instead of guessed,
+and `spd` is live in every mode, so the two workarounds below apply to
+console 1 only.
 
 One thing the firmware reports cannot be taken at face value. `spd` is
 measured inside the speed loop (outer.c), which only runs in speed and
@@ -73,23 +83,32 @@ import threading
 import time
 import winreg
 
+import fwsim
+
 UNITS_PER_RPM = 65536.0 / 60000.0
 SPEED_MAX_RPM = 6000            # OUTER_SPEED_MAX is 6560 units/ms = 6006 rpm
 POLL_HZ = 100.0
 HISTORY_SECONDS = 20.0
 
-# Listed as a port when enabled (foc.py --emulator): fwsim.py standing in
-# for a board. Off by default so it is never mistaken for one.
+# Listed as a port, last and labelled for what it is: fwsim.py standing in
+# for a board, so that everything a board does can be tried without one.
 EMULATOR_PORT = "emulator"
-emulator_enabled = False
+emulator_enabled = True
 
-# name -> (default the firmware is built with, lowest, highest)
-PARAM_RANGE = {
-    "ckp": (6000, 0, 262144), "cki": (900, 0, 32767), "cdec": (1, 0, 1),
-    "ccross": (20580, 0, 32767), "cemf": (6554, 0, 32767),
-    "skp": (32768, 0, 1048576), "ski": (6144, 0, 131072),
-    "simax": (16384, 256, 29491), "pkp": (328, 0, 32768),
-}
+# name -> (default the firmware is built with, lowest, highest), for console
+# 3. A board with console 2 has the first nine and refuses the rest.
+PARAM_RANGE = {name: (default, lo, hi) for name, default, lo, hi in fwsim.PARAMS}
+
+VEHICLE_STATES = ("off", "waiting for the throttle to be released", "running",
+                  "braking", "throttle fault")
+SENSOR_NAMES = ("encoder", "hall sensors", "observer")
+SENSOR_PHASES = ("", "hall sensors", "forced angle, starting",
+                 "following the back-emf", "calibrating")
+CAL_RESULTS = {0: "not calibrated", 1: "calibrated",
+               2: "failed: the two directions saw different states",
+               3: "failed: not six states - are three sensors connected?",
+               4: "failed: the states do not follow one another in a ring",
+               9: "stopped by a command"}
 
 # bits of selftest.ok_flags, in the order selftest.h defines them
 FLAGS = (
@@ -103,7 +122,7 @@ FLAGS = (
     (0x80, "current sensing"),
 )
 
-CHANNELS = ("rpm", "ref", "iq", "iqref", "id")
+CHANNELS = ("rpm", "ref", "iq", "iqref", "id", "thr", "idfw")
 
 
 # ----------------------------------------------------------------- serial ---
@@ -267,6 +286,10 @@ SUMMARY = (
 
 EXTRA = re.compile(r"^x vd (-?\d+)\s+vq (-?\d+)\s+loop (\d+)\s+outer (\d+)"
                    r"\s+cap (\d+)\s+n (\d+)")
+VEHICLE = re.compile(r"^v ((?:\w+ -?\d+ ?)+)$")
+HALL = re.compile(r"^hall ok (\d) err (\d+) e((?: -?\d+){8})$")
+CAN = re.compile(r"^can test (\d+) mode (\d+) id (\d+) br (\d+) rx (\d+) tx (\d+) drop (\d+)")
+OLF = re.compile(r"^olf((?: [0-9a-f]{2}){12})$")
 VERSION = re.compile(r"^fw (\d+) cap (\d+)")
 PARAM = re.compile(r"^p (\w+) (-?\d+)$")
 DUMP = re.compile(r"^cap (\w+) div (\d+) n (\d+) state (\d+)$")
@@ -287,8 +310,7 @@ class BoardLink:
     def __init__(self, port):
         self.port = port
         if port == EMULATOR_PORT:
-            import fwsim
-            self.ser = fwsim.FwSim()
+            self.ser = fwsim.open_emulator()    # raises OSError while it is away
         else:
             self.ser = Serial(port)         # raises OSError with the reason
         self.fw = None                      # console version, once known
@@ -300,6 +322,12 @@ class BoardLink:
         self.cap_div = 1
         self.cap_serial = 0                 # bumps when a dump has arrived
         self.x_every = 5                    # one `x` per this many `s`
+        self.veh = {}                       # the last `v` line, console 3
+        self.hall = None                    # (ok, errors, [8 edges]) from `hall`
+        self.hall_serial = 0
+        self.can = None                     # the last `can` line, as a dict
+        self.ol_frame = None                # the last `olf` line, 12 bytes
+        self.away = False                   # `can on` was sent: expect to lose the port
         self._dump = None
         self._polls = 0
         self.unanswered = 0                 # `s` requests that got no reply
@@ -353,6 +381,10 @@ class BoardLink:
                     pass
         elif word == "cap":
             self.cap_state = None       # stale until the next `x` says
+        elif word == "drv" and text.split()[-1] != "0":
+            self.started = True
+        elif text == "can on":
+            self.away = True
         self._cmds.put(text)
 
     def run_speed(self, rpm):
@@ -464,7 +496,7 @@ class BoardLink:
         st = parse_state(line)
         if st:
             step = self._track_angle(st, now)
-            if self.mode is None and step is not None and self.fw != 2:
+            if self.mode is None and step is not None and (self.fw or 0) < 2:
                 # The state line does not say which mode the loop is in, and
                 # `spd` may be stale. Watch the angle for a few lines: if it
                 # is barely moving and no torque is being asked for, the loop
@@ -497,6 +529,8 @@ class BoardLink:
                 ch["iq"].append(st["iq"])
                 ch["iqref"].append(self.iqref)
                 ch["id"].append(st["id"])
+                ch["thr"].append(self.veh.get("thr", 0))
+                ch["idfw"].append(self.veh.get("idfw", 0))
                 if len(self._t) > int(HISTORY_SECONDS * POLL_HZ * 1.5):
                     cut = len(self._t) - int(HISTORY_SECONDS * POLL_HZ * 1.2)
                     del self._t[:cut]
@@ -518,6 +552,11 @@ class BoardLink:
                 self.cap_state = cap
             self.mode = ("speed" if outer == 1 else "position" if outer == 2
                          else ("idle", "align", "current", "voltage")[min(loop, 3)])
+            return False
+        m = VEHICLE.match(line)
+        if m:
+            parts = m.group(1).split()
+            self.veh = {k: int(v) for k, v in zip(parts[0::2], parts[1::2])}
             return False
         if self._dump is not None:
             if line.startswith("d"):
@@ -545,19 +584,39 @@ class BoardLink:
         if m:
             self.fw = int(m.group(1))
             self.send("get")
+            if self.fw >= 3:
+                self.send("hall")
+                self.send("can")
+            return False
+        m = HALL.match(line)
+        if m:
+            self.hall = (int(m.group(1)), int(m.group(2)),
+                         [int(v) for v in m.group(3).split()])
+            self.hall_serial += 1
+            return False
+        m = CAN.match(line)
+        if m:
+            self.can = dict(zip(("test", "mode", "id", "br", "rx", "tx", "drop"),
+                                (int(v) for v in m.groups())))
+            return False
+        m = OLF.match(line)
+        if m:
+            self.ol_frame = [int(v, 16) for v in m.group(1).split()]
             return False
         if line == "? for help" and self.fw is None:
             self.fw = 1
             return False
         if line in MODE_REPLY:
-            if self.fw != 2:            # console 2 says so itself, in `x`
+            if (self.fw or 0) < 2:      # console 2 says so itself, in `x`
                 self.mode = MODE_REPLY[line]
         elif line == "telemetry on":
             self.telemetry = True
             self.send("m")              # we poll instead; switch it back off
         elif line == "telemetry off":
             self.telemetry = False
-        elif line.startswith("refused:") or line.startswith("armed"):
+        elif (line.startswith("refused:") or line.startswith("armed")
+              or line.startswith("? stop") or line.startswith("drive o")
+              or line.startswith("hall calibration")):
             self.notice = line
         elif line == "fault cleared":
             self.notice = line
@@ -626,9 +685,12 @@ class BoardLink:
                             # and that is what hung the firmware's USB driver (a
                             # lost CTR_RX, since fixed there - but a board with the
                             # older driver should not be hung from here).
-                            if self.fw == 2 and self._polls % self.x_every == 0:
+                            fw = self.fw or 0
+                            if fw >= 2 and self._polls % self.x_every == 0:
                                 self.ser.write_line("x")
                                 self._x_sent += 1
+                            elif fw >= 3 and self._polls % self.x_every == 2:
+                                self.ser.write_line("v")
                 else:
                     time.sleep(0.001)
         except OSError as err:
@@ -637,7 +699,8 @@ class BoardLink:
     def close(self):
         """Disconnect. If this session started the motor model moving, put
         the loop back to idle first; otherwise leave the board as it was."""
-        if self._alive and self.error is None and self.started and self.running:
+        if (self._alive and self.error is None and self.started
+                and (self.running or self.veh.get("veh") in (1, 2, 3))):
             self.send("off")
             end = time.perf_counter() + 0.4
             while self.mode != "idle" and time.perf_counter() < end:

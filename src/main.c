@@ -28,6 +28,9 @@
 #include "usb_cdc.h"
 #include "console.h"
 #include "safety.h"
+#include "canbus.h"
+#include "drive.h"
+#include "sensor.h"
 
 #define LED_PIN   13U     /* PC13, active low */
 
@@ -100,6 +103,17 @@ static uint32_t count_bits(uint32_t v)
   return n;
 }
 
+/* A delay for the main loop once the watchdog is running. The control loop
+   is in the interrupt and is not what this is waiting on. */
+static void delay_ms_fed(uint32_t ms)
+{
+  uint32_t start = tick_ms;
+
+  while ((tick_ms - start) < ms) {
+    safety_watchdog_refresh();
+  }
+}
+
 /*
  * Pull D+ low briefly so the host notices a disconnect and re-enumerates.
  * Without it, a board just reflashed over SWD often keeps the host's old
@@ -112,11 +126,39 @@ static void usb_force_reenumerate(void)
   GPIOA->CRH &= ~(0xFUL << (4U * (12U - 8U)));
   GPIOA->CRH |=  (0x2UL << (4U * (12U - 8U)));   /* output push-pull 2 MHz */
   GPIOA->BSRR = (1UL << (12U + 16U));            /* drive PA12 low */
-  delay_ms(100U);
+  delay_ms_fed(100U);
 
   GPIOA->CRH &= ~(0xFUL << (4U * (12U - 8U)));
   GPIOA->CRH |=  (0x4UL << (4U * (12U - 8U)));   /* back to input floating */
-  delay_ms(10U);
+  delay_ms_fed(10U);
+}
+
+/*
+ * USB off, CAN on. The two share memory inside the chip and cannot both be
+ * running, so the console goes away for as long as CAN is up.
+ *
+ * D+ is held low meanwhile. The board's pull-up on it is wired to 3.3 V and
+ * cannot be switched off, so without this the host would go on seeing a
+ * device that no longer answers; with it, the host sees an unplug, and a
+ * clean plug-in again when USB comes back.
+ */
+static void go_to_can(void)
+{
+  delay_ms_fed(30U);                             /* let the reply get out */
+  usb_cdc_stop();
+
+  GPIOA->CRH &= ~(0xFUL << (4U * (12U - 8U)));
+  GPIOA->CRH |=  (0x2UL << (4U * (12U - 8U)));
+  GPIOA->BSRR = (1UL << (12U + 16U));
+
+  can_start();
+}
+
+static void back_to_usb(void)
+{
+  can_stop();
+  usb_force_reenumerate();
+  usb_cdc_init();
 }
 
 int main(void)
@@ -127,6 +169,13 @@ int main(void)
 
   /* Before anything else overwrites the flags: why did we just restart? */
   safety_init();
+
+  /*
+   * The CAN controller, in loopback, before USB exists. It shares USB's
+   * memory, so this is the one moment it can be exercised without taking
+   * the console away - and it takes about a millisecond.
+   */
+  (void)can_selftest();
 
   /*
    * USB comes up first, before the self-tests.
@@ -186,6 +235,8 @@ int main(void)
   uint32_t passed = count_bits(selftest.ok_flags & 0xFFU);
   uint32_t banner_sent = 0U;
 
+  sensor_init();
+  drive_init();
   console_init();
 
   /*
@@ -196,6 +247,22 @@ int main(void)
   safety_watchdog_start();
 
   while (1) {
+    if (can_active() != 0) {
+      /* On CAN: no console. The LED flickers so the state is visible. */
+      led((millis() & 0x40U) != 0U);
+      if (can_poll() != 0) {
+        back_to_usb();
+      }
+      safety_poll();
+      safety_watchdog_refresh();
+      delay_ms(1U);
+      continue;
+    }
+    if (console_can_requested() != 0) {
+      go_to_can();
+      continue;
+    }
+
     /* LED: solid once the host has opened the port, otherwise blinking the
        number of passed self-tests. */
     if (usb_cdc_configured() != 0) {
@@ -210,13 +277,21 @@ int main(void)
       safety_watchdog_refresh();
     } else {
       safety_watchdog_refresh();
+      /* These waits are longer than the watchdog's period. Without a host
+         - on a charger, or in the second after coming back from CAN - they
+         used to reset the board every time round. */
       for (uint32_t i = 0U; i < passed; i++) {
         led(1);
-        delay_ms(150U);
+        delay_ms_fed(150U);
         led(0);
-        delay_ms(250U);
+        delay_ms_fed(250U);
+        if (usb_cdc_configured() != 0) {
+          break;
+        }
       }
-      delay_ms(1000U);
+      for (uint32_t i = 0U; (i < 100U) && (usb_cdc_configured() == 0); i++) {
+        delay_ms_fed(10U);
+      }
     }
 
     safety_watchdog_refresh();

@@ -6,20 +6,6 @@
 
 #define ANGLE_QUARTER   16384u  /* 90 degrees in 16-bit angle units */
 
-/* Saturate a 32-bit intermediate back into Q15 instead of wrapping.
-   Wrapping here is the classic fixed-point bug: a current spike folds to the
-   opposite sign and the PI loop slams the duty to the other rail. */
-static inline int16_t q15_sat(int32_t v)
-{
-  if (v > 32767) {
-    return 32767;
-  }
-  if (v < -32768) {
-    return -32768;
-  }
-  return (int16_t)v;
-}
-
 int16_t foc_sin(uint16_t angle)
 {
   uint32_t idx  = (uint32_t)(angle >> FOC_SIN_TABLE_SHIFT);
@@ -53,30 +39,12 @@ foc_ab foc_clarke(int16_t a, int16_t b)
 
 foc_dq foc_park(foc_ab in, uint16_t angle)
 {
-  foc_dq out;
-  int16_t s = foc_sin(angle);
-  int16_t c = foc_cos(angle);
-
-  /*  d =  alpha*cos + beta*sin
-      q = -alpha*sin + beta*cos   */
-  out.d = q15_sat((int32_t)q15_mul(in.alpha, c) + (int32_t)q15_mul(in.beta, s));
-  out.q = q15_sat(-(int32_t)q15_mul(in.alpha, s) + (int32_t)q15_mul(in.beta, c));
-
-  return out;
+  return foc_park_sc(in, foc_sincos(angle));
 }
 
 foc_ab foc_inv_park(foc_dq in, uint16_t angle)
 {
-  foc_ab out;
-  int16_t s = foc_sin(angle);
-  int16_t c = foc_cos(angle);
-
-  /*  alpha = d*cos - q*sin
-      beta  = d*sin + q*cos   */
-  out.alpha = q15_sat((int32_t)q15_mul(in.d, c) - (int32_t)q15_mul(in.q, s));
-  out.beta  = q15_sat((int32_t)q15_mul(in.d, s) + (int32_t)q15_mul(in.q, c));
-
-  return out;
+  return foc_inv_park_sc(in, foc_sincos(angle));
 }
 
 foc_abc foc_svpwm(foc_ab v, uint16_t period)

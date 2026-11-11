@@ -1,4 +1,6 @@
 #include "capture.h"
+#include "drive.h"
+#include "oneline.h"
 #include "stm32f103xb.h"
 #include "selftest.h"
 #include "tim1.h"
@@ -320,7 +322,14 @@ void ADC1_2_IRQHandler(void)
        */
       outer_tick(foc_loop_angle());
 
-      /* The recorder, last: it reads what the two calls above just left. */
+      /* Throttle, brake, field weakening and the sensor supervision, in
+         step with the 1 kHz loop above; then the dashboard signal, which
+         has an edge to place in most periods. Both return at once when
+         they have nothing to do. */
+      drive_tick();
+      oneline_tick();
+
+      /* The recorder, last: it reads what the calls above just left. */
       capture_tick();
 
       if (casc_armed != 0u) {
