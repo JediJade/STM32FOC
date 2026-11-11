@@ -1557,9 +1557,17 @@ class App(tk.Tk):
         self.resizable(False, False)
         self.configure(bg=B.PAPER)
         try:
-            self.iconbitmap(resource_path(ICON_FILE))
+            # `default` is not a detail: the plain form sets the icon on
+            # this window only (WM_SETICON), and the taskbar draws the
+            # window class's icon, which Tk registers with its own feather.
+            # This form sets the application's, class icon included, and
+            # covers every toplevel opened later.
+            self.iconbitmap(default=resource_path(ICON_FILE))
         except tk.TclError:
-            pass
+            try:
+                self.iconbitmap(resource_path(ICON_FILE))
+            except tk.TclError:
+                pass
 
         self.drive = Drive()
         self.tune = AutoTune(self.drive)
