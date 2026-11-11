@@ -10,6 +10,10 @@
 #define FX              8
 
 #define HALL_TIMEOUT    4000u               /* periods without an edge: stopped */
+#define K_ONE           4096                /* the per-sector correction, Q12 */
+#define K_MIN           2048                /* it may not claim more than a */
+#define K_MAX           8192                /* factor of two either way */
+#define K_SHIFT         4                   /* how fast it creeps: 1/16 an edge */
 
 #define CAL_W           (8 << FX)           /* the field turns 8 units a period */
 #define CAL_TURN        (98304u << FX)      /* one and a half turns each way */
@@ -37,6 +41,17 @@ static int32_t   h_rep_fx;      /* what the speed loop is told */
 static uint32_t  h_trav;        /* how far the angle has been carried since the edge */
 static uint32_t  h_lim;         /* and how far it may be: to the next edge */
 static uint32_t  h_err;
+/*
+ * Per-sector correction of the calibrated width, Q12, and the last six
+ * sectors as a window on one whole turn. K_ONE is no correction.
+ */
+static int32_t   h_k[8];
+static uint32_t  h_win_w[6];    /* width of each of the last six sectors */
+static uint32_t  h_win_c[6];    /* and the periods it took */
+static uint8_t   h_win_i;       /* where the next one goes */
+static uint8_t   h_win_n;       /* how many are filled, up to six */
+static int32_t   h_turn1;       /* the last turn's speed, to tell steady from not */
+static int32_t   h_one1;        /* the sector before last, corrected */
 
 /* ---- calibration */
 static volatile uint8_t cal;
@@ -114,6 +129,21 @@ int32_t sensor_speed(void)
 }
 
 /* Start from the middle of whatever sector the rotor is in. */
+/* No corrections learned, and no window: after a calibration, a new table,
+   a reversal, or a stop. */
+static void hall_forget(void)
+{
+  int c;
+
+  for (c = 0; c < 8; c++) {
+    h_k[c] = K_ONE;
+  }
+  h_win_i = 0u;
+  h_win_n = 0u;
+  h_turn1 = 0;
+  h_one1  = 0;
+}
+
 static void hall_seed(void)
 {
   uint8_t code = sensor_hall_now();
@@ -173,20 +203,73 @@ static void hall_step(void)
          */
         uint32_t wid = h_wid[old];
         uint32_t cnt = h_cnt;
+        int32_t  one = (int32_t)((wid << FX) / cnt);   /* this sector alone */
 
         /*
-         * The speed loop gets the last sector alone. It can live with a few
-         * percent of ripple, and what it cannot live with is delay: a speed
-         * that is two sectors old is, at low speed, ten milliseconds old,
-         * and the loop rings on it.
+         * What the last six sectors say, which is one whole turn: the
+         * widths add up to a turn however wrong each one is, so this is
+         * free of the error in any single width. It is also a turn old,
+         * which is why it is used to correct the fast estimate rather than
+         * to replace it.
          */
-        h_rep_fx = d * (int32_t)((wid << FX) / cnt);
-
-        if (h_cnt1 != 0u) {
-          wid += h_wid1;
-          cnt += h_cnt1;
+        h_win_w[h_win_i] = wid;
+        h_win_c[h_win_i] = cnt;
+        h_win_i = (uint8_t)((h_win_i + 1u) % 6u);
+        if (h_win_n < 6u) {
+          h_win_n++;
         }
-        h_spd_fx = d * (int32_t)((wid << FX) / cnt);
+        if ((h_win_n >= 6u) && (one > 0)) {
+          uint32_t sw = 0u;
+          uint32_t sc = 0u;
+          int      i;
+
+          for (i = 0; i < 6; i++) {
+            sw += h_win_w[i];
+            sc += h_win_c[i];
+          }
+          if (sc != 0u) {
+            int32_t turn = (int32_t)((sw << FX) / sc);
+            int32_t d_turn = turn - h_turn1;
+
+            if (d_turn < 0) { d_turn = -d_turn; }
+            /*
+             * Learn only while the turn as a whole is steady. Under real
+             * acceleration every sector is genuinely faster than the one
+             * before it, and a correction that took that for a wrong width
+             * would write the acceleration into the table and then read it
+             * back out as a wobble once the speed was constant again. A
+             * thirty-secondth of the speed over a whole turn is far more
+             * than noise and far less than a step.
+             */
+            if ((h_turn1 > 0) && (d_turn <= (turn >> 5))) {
+              int32_t want = (int32_t)((uint32_t)turn * (uint32_t)K_ONE
+                                       / (uint32_t)one);
+
+              if (want < K_MIN) { want = K_MIN; }
+              if (want > K_MAX) { want = K_MAX; }
+              h_k[old] += (want - h_k[old]) >> K_SHIFT;
+            }
+            h_turn1 = turn;
+          }
+        }
+
+        /*
+         * The speed loop gets the last sector alone, corrected. It can live
+         * with a few percent of ripple, and what it cannot live with is
+         * delay: a speed that is two sectors old is, at low speed, ten
+         * milliseconds old, and the loop rings on it.
+         */
+        one = (one * h_k[old]) >> 12;
+        h_rep_fx = d * one;
+
+        /*
+         * The angle is carried forward on two sectors, not one: a time is
+         * only known to the period, and the narrow sectors a unipolar
+         * switch makes are few periods long. Both are corrected, so the
+         * average is of two numbers that mean the same thing.
+         */
+        h_spd_fx = d * ((h_one1 != 0) ? ((one + h_one1) / 2) : one);
+        h_one1 = one;
 
         /* The edge fell somewhere inside the last period: half a period
            past it, on average. */
@@ -195,7 +278,11 @@ static void hall_step(void)
         h_wid1 = h_wid[old];
       } else {
         /* First edge, or the first after a reversal: the speed is not known
-           yet, and the middle of the sector is at most half of it wrong. */
+           yet, and the middle of the sector is at most half of it wrong.
+           The window holds sectors crossed the other way; it has to go. */
+        h_win_n = 0u;
+        h_win_i = 0u;
+        h_one1  = 0;
         h_spd_fx = 0;
         h_rep_fx = 0;
         h_ang_fx = (uint32_t)(uint16_t)(h_edge[code] + (h_wid[code] >> 1)) << FX;
@@ -221,6 +308,9 @@ static void hall_step(void)
          then never moves again. The middle is at most half a sector out. */
       h_spd_fx = 0;
       h_rep_fx = 0;
+      h_win_n  = 0u;
+      h_win_i  = 0u;
+      h_one1   = 0;
       h_ang_fx = (uint32_t)(uint16_t)(h_edge[h_code] + (h_wid[h_code] >> 1)) << FX;
     } else {
       uint32_t step = (uint32_t)((h_spd_fx < 0) ? -h_spd_fx : h_spd_fx);
@@ -480,6 +570,7 @@ static void cal_finish(void)
     }
     h_valid = 1u;
     h_err   = 0u;
+    hall_forget();              /* the corrections belonged to the old table */
   }
   cal_end(result);
 }
@@ -717,6 +808,7 @@ int sensor_hall_table_set(const uint16_t *edge, const uint8_t *next)
   }
   h_valid = 1u;
   h_err   = 0u;
+  hall_forget();
   if (kind == SENS_HALL) {
     hall_seed();              /* the angle in flight was built on the old table */
   }

@@ -83,6 +83,8 @@ python checks\v3_features.py COM13 --can
                                  ฟีเจอร์ console รุ่น 3 บนบอร์ด 33 ข้อ
 python checks\store_flash.py COM13 --hall
                                  ค่าที่เก็บใน flash ข้ามการรีเซ็ตที่บอร์ดทำกับตัวเอง 23 ข้อ
+python checks\hall_speed.py COM13
+                                 วัดการแกว่งของลูปความเร็วบน Hall เทียบกับบน encoder
 ```
 
 `build-exe.cmd` สร้าง `dist\FOC.exe` ด้วย PyInstaller เป็นไฟล์เดียวขนาดราว 15 MB
@@ -206,7 +208,7 @@ Auto tune ทำให้สองชุดนี้ตรงกันด้ว�
 | `fwsim.py` | การคำนวณและ console ของ firmware เขียนด้วย Python ใช้แทนบอร์ดเวลาทดสอบ ค่าที่ save ไว้เก็บเป็นไฟล์ในโฟลเดอร์ temp เพราะไม่มีอะไรในโปรเซสเดียวที่แทนหน้า flash ซึ่งอยู่ข้ามการปิดไฟได้ |
 | `braun.py` | ชุดวาดภาพ: ปุ่มกลม, slider, หน้าปัด, จอมืด ทั้งหมด anti-alias ด้วย Pillow |
 | `build-exe.cmd` | สร้าง `dist\FOC.exe` |
-| `checks/` | สคริปต์ตรวจกับบอร์ดจริง พิมพ์ผลเป็นข้อความสำหรับเก็บ log: `usb_overlap.py` และ `usb_fullpacket.py` (บั๊ก USB สองตัว), `usb_state.py` (อ่านรีจิสเตอร์ endpoint ผ่าน SWD โดยไม่หยุด CPU), `board_tune.py` (auto tune แบบไม่เปิดหน้าต่าง), `align_reset.py` (แสดงว่า `align` ทำให้บอร์ดรีเซ็ต ซึ่งจะรีเซ็ตบอร์ดจริง), `v3_features.py` (ฟีเจอร์ console รุ่น 3 ทีละอย่าง บนบอร์ดหรือบนตัวเลียนแบบ), `store_flash.py` (ค่าที่เก็บใน flash พิสูจน์ด้วยการให้บอร์ดรีเซ็ตตัวเองด้วย `hang`) |
+| `checks/` | สคริปต์ตรวจกับบอร์ดจริง พิมพ์ผลเป็นข้อความสำหรับเก็บ log: `usb_overlap.py` และ `usb_fullpacket.py` (บั๊ก USB สองตัว), `usb_state.py` (อ่านรีจิสเตอร์ endpoint ผ่าน SWD โดยไม่หยุด CPU), `board_tune.py` (auto tune แบบไม่เปิดหน้าต่าง), `align_reset.py` (แสดงว่า `align` ทำให้บอร์ดรีเซ็ต ซึ่งจะรีเซ็ตบอร์ดจริง), `v3_features.py` (ฟีเจอร์ console รุ่น 3 ทีละอย่าง บนบอร์ดหรือบนตัวเลียนแบบ), `store_flash.py` (ค่าที่เก็บใน flash พิสูจน์ด้วยการให้บอร์ดรีเซ็ตตัวเองด้วย `hang`), `hall_speed.py` (ลูปความเร็วบน Hall เทียบกับบน encoder ทีละความเร็ว) |
 
 `fwsim.py` เป็นตัวแทนสำหรับทดสอบ ไม่ใช่หลักฐาน เมื่อจ่ายแรงดัน step เดียวกัน
 ค่าที่บันทึกได้ 256 จุดต่างจากบอร์ดจริงไม่เกิน 2 counts แต่เมื่อสั่งเปลี่ยนความเร็ว

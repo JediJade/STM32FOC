@@ -48,6 +48,9 @@ python checks\v3_features.py COM13 --can
 python checks\store_flash.py COM13 --hall
                                  the settings kept in flash, across a reset
                                  the board makes itself: 23 checks
+python checks\hall_speed.py COM13
+                                 what the speed loop does on Hall sensors
+                                 against the same loop on the encoder
 ```
 
 `build-exe.cmd` makes `dist\FOC.exe` with PyInstaller: one file, about
@@ -236,7 +239,7 @@ Identification lands within 1 % of the real motor on all four quantities.
 | `protocols.py` | the one-line frame and the CAN frames: build, decode, check - no UI |
 | `braun.py` | drawing kit: round buttons, sliders, dial, dark screens, all anti-aliased with Pillow |
 | `build-exe.cmd` | builds `dist\FOC.exe` |
-| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model), `store_flash.py` (the settings kept in flash, proved across a reset the board makes itself with `hang`) |
+| `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model), `store_flash.py` (the settings kept in flash, proved across a reset the board makes itself with `hang`), `hall_speed.py` (the speed loop on Hall sensors against the same loop on the encoder, speed by speed) |
 
 `fwsim.py` is a test double, not evidence. On the same voltage step its
 256 recorded samples differ from the board's by at most 2 counts; on a speed

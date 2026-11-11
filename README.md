@@ -329,6 +329,39 @@ the board: top speed 5280 units/ms without, 10220 with (i_d -8192). For
 this the feed-forward had to follow the speed (`cdec 2`): it was two
 constants, right at one speed.
 
+**The speed a Hall sensor gives, and the bias in it.** A sector's speed
+is its calibrated width over the time it took. The time is honest to one
+period; the width is a measurement with an error of its own, and that error
+is fixed per sector, so each sector reports the same speed a few percent
+wrong in its own direction, turn after turn. The loop then chases a
+staircase that is not there. Recorded on the board at 1000 units/ms, the
+reported speed stepped at every edge over a 20 percent band while the same
+loop on the encoder held 4 percent.
+
+Six sectors make a turn, and over a whole turn the widths have to add up to
+65536 however wrong each one is - so the speed over the last six sectors is
+free of the bias, and each sector's own estimate is compared against it. A
+per-sector correction creeps towards what would make the two agree (Q12, a
+sixteenth of the gap per edge, clamped to a factor of two), and it is
+learned only while the turn as a whole is steady, or real acceleration gets
+written into the table and read back out as a wobble. The delay stays one
+sector, which is what the loop needs, and the corrections are forgotten
+whenever the table changes, the rotor reverses or it stops.
+
+`studio/checks/hall_speed.py COM13` is the measurement, encoder and Hall
+one after the other on the same motor with the same gains. On the board,
+2026-11-11, ripple as a fraction of the speed held:
+
+| asked, units/ms | before | after | encoder |
+| --- | --- | --- | --- |
+| 600 | 16 % | 5.4 % | 1.9 % |
+| 1000 | 15 % | 2.8 % | 1.2 % |
+| 2000 | 15 % | 2.8 % | 0.6 % |
+| 4000 | 15 % | 3.5 % | 0.5 % |
+
+At 300 it is still 65 %, and no arithmetic here can change that: one speed
+update per 180 ms is what the sensor gives.
+
 **Sensor selector, Hall sensors, observer** (`src/sensor.c`). The 3144
 and 3143 are unipolar switches, not latches: each is on for less than half
 a turn, so the six states are not 60 degrees each. The edges are therefore
@@ -401,10 +434,12 @@ and none was fitted: on the bench every status frame was dropped unsent.
 
 - No real throttle, brake, Hall sensor, dashboard or transceiver has been
   connected. `hsrc 1` and `insrc 1` read the pins; nothing has driven them.
-- With Hall sensors the speed is as old as the last sector. On the light
-  first motor with uneven (3144-like) sectors the speed loop hunts below
-  about 1500 units/ms; on the second it holds 1000 and hunts at 300.
-  Torque mode, which is what a throttle is, does not have this problem.
+- With Hall sensors the speed is as old as the last sector, and on the
+  model's 3144-like sectors the wide one lasts 180 ms at 300 units/ms - so
+  below about 600 units/ms the loop is told the speed five times a second
+  and rides on it. Torque mode, which is what a throttle is, does not have
+  this problem. Above that it is steady: see the per-sector correction
+  below.
 - Below `slmin` the observer's rotor is on a forced angle with no damping
   of its own. It starts and it turns; it is not a position hold.
   At the weakened top speed of the second motor its angle was 4.4 degrees

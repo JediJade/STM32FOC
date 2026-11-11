@@ -68,6 +68,7 @@ PH_NONE, PH_HALL, PH_OPEN, PH_CLOSED, PH_CAL = 0, 1, 2, 3, 4
 
 LOOP_ALIGN_V = 6000
 HALL_TIMEOUT = 4000             # periods without an edge: call it standing still
+K_ONE, K_MIN, K_MAX, K_SHIFT = 4096, 2048, 8192, 4   # per-sector correction, Q12
 CAL_W = 8 << 8                  # the calibration field turns 8 units a period
 CAL_TURN = 98304 << 8           # one and a half turns each way
 PLL_KP = 4
@@ -241,6 +242,15 @@ class FwSim:
         self.h_trav = 0
         self.h_lim = 0
         self.h_err = 0
+        # per-sector correction of the calibrated width, and the last six
+        # sectors: one whole turn, which no single width can bias
+        self.h_k = [K_ONE] * 8
+        self.h_win_w = [0] * 6
+        self.h_win_c = [0] * 6
+        self.h_win_i = 0
+        self.h_win_n = 0
+        self.h_turn1 = 0
+        self.h_one1 = 0
         # sensor: calibration
         self.cal = 0
         self.cal_result = 0
@@ -338,6 +348,7 @@ class FwSim:
             self.h_wid = [(self.h_edge[self.h_next[c]] - self.h_edge[c]) & 0xFFFF
                           if self.h_next[c] else 0 for c in range(8)]
             self.h_valid = True
+            self._hall_forget()
             self.h_err = 0
         for name, value in rec["params"].items():
             if name in PARAM_INDEX:
@@ -586,6 +597,13 @@ class FwSim:
             return (self.pll_w_fx * 20) >> 8
         return (self.wol_fx * 20) >> 8
 
+    def _hall_forget(self):
+        """No corrections learned: a new table, a reversal, or a stop."""
+        self.h_k = [K_ONE] * 8
+        self.h_win_i = self.h_win_n = 0
+        self.h_turn1 = 0
+        self.h_one1 = 0
+
     def _hall_seed(self):
         """Start from the middle of whatever sector the rotor is in."""
         code = self._hall_now()
@@ -645,13 +663,32 @@ class FwSim:
                         # few periods to time, when it is a narrow one
                         wid = self.h_wid[old]
                         cnt = self.h_cnt
-                        # the speed loop gets the last sector alone: it
-                        # minds delay more than ripple
-                        self.h_rep_fx = d * ((wid << 8) // cnt)
-                        if self.h_cnt1:
-                            wid += self.h_wid1
-                            cnt += self.h_cnt1
-                        self.h_spd_fx = d * ((wid << 8) // cnt)
+                        one = (wid << 8) // cnt      # this sector alone
+                        # what the last six sectors say: a whole turn, so
+                        # no single width's error is in it
+                        self.h_win_w[self.h_win_i] = wid
+                        self.h_win_c[self.h_win_i] = cnt
+                        self.h_win_i = (self.h_win_i + 1) % 6
+                        self.h_win_n = min(6, self.h_win_n + 1)
+                        if self.h_win_n >= 6 and one > 0:
+                            sc = sum(self.h_win_c)
+                            if sc:
+                                turn = (sum(self.h_win_w) << 8) // sc
+                                # learn only while the turn is steady, or
+                                # acceleration gets written into the table
+                                if self.h_turn1 > 0 and abs(turn - self.h_turn1) <= turn >> 5:
+                                    want = _clamp(turn * K_ONE // one, K_MIN, K_MAX)
+                                    self.h_k[old] += (want - self.h_k[old]) >> K_SHIFT
+                                self.h_turn1 = turn
+                        # the speed loop gets the last sector alone,
+                        # corrected: it minds delay more than ripple
+                        one = (one * self.h_k[old]) >> 12
+                        self.h_rep_fx = d * one
+                        # the angle is carried on two sectors, both
+                        # corrected, because a narrow sector is few periods
+                        self.h_spd_fx = d * (((one + self.h_one1) // 2)
+                                             if self.h_one1 else one)
+                        self.h_one1 = one
                         # the edge fell somewhere in the last period: half a
                         # period's travel past it, on average
                         self.h_ang_fx = ((boundary << 8) + (self.h_spd_fx >> 1)) & 0xFFFFFF
@@ -663,6 +700,8 @@ class FwSim:
                         self.h_ang_fx = ((self.h_edge[code] + (self.h_wid[code] >> 1))
                                          & 0xFFFF) << 8
                         self.h_cnt1 = 0
+                        self.h_win_i = self.h_win_n = 0
+                        self.h_one1 = 0
                     self.h_trav = 0
                     self.h_lim = self.h_wid[code] << 8
                     self.h_dir = d
@@ -676,6 +715,8 @@ class FwSim:
                         # standing still: back to the middle of the sector
                         self.h_spd_fx = 0
                         self.h_rep_fx = 0
+                        self.h_win_i = self.h_win_n = 0
+                        self.h_one1 = 0
                         self.h_ang_fx = ((self.h_edge[self.h_code]
                                           + (self.h_wid[self.h_code] >> 1)) & 0xFFFF) << 8
                     else:
@@ -773,6 +814,7 @@ class FwSim:
                 if mask & (1 << c):
                     self.h_wid[c] = (self.h_edge[self.h_next[c]] - self.h_edge[c]) & 0xFFFF
             self.h_valid = True
+            self._hall_forget()
             self.h_err = 0
             ok = 1
         self.cal_result = ok
