@@ -593,8 +593,26 @@ class BoardParams:
     """The parameters page, editing the board (console version 2)."""
 
     kind = "board"
-    note = ("these are in the board's memory and go back to the built-in "
-            "values when it is reset. the firmware has nowhere to store them.")
+
+    @property
+    def note(self):
+        # Console 4 keeps them; anything older cannot, and saying so is the
+        # whole difference between a board you can tune and one you have to
+        # tune again at every switch-on.
+        link = self.app.board
+        if link is not None and link.store_supported:
+            st = (link.store or {}).get("state")
+            if st == "ok":
+                return ("these are in the board's memory. its flash page "
+                        "already holds a set - keep these in the board to "
+                        "replace it, or take the board's own set to go back "
+                        "to it.")
+            return ("these are in the board's memory and go back to the "
+                    "built-in values when it is reset, until keep these in "
+                    "the board writes them to its flash page.")
+        return ("these are in the board's memory and go back to the built-in "
+                "values when it is reset. this console cannot store them; "
+                "console 4 added save and load.")
 
     @property
     def groups(self):

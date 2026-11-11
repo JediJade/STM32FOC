@@ -31,7 +31,8 @@ plant is whatever answers the console, which today is the model inside the
 firmware and later is a motor.
 
 The new gains live in the board's RAM. apply() keeps them until the next
-reset; the firmware has nowhere to store them yet.
+reset; `save` on the console (version 4) writes them to the board's flash
+page, and the studio has a button for it on the parameters page.
 """
 
 import math
