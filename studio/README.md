@@ -51,6 +51,8 @@ python checks\store_flash.py COM13 --hall
 python checks\hall_speed.py COM13
                                  what the speed loop does on Hall sensors
                                  against the same loop on the encoder
+python lab.py                    the fault lab: a board broken on purpose,
+                                 four faults from this project's own history
 ```
 
 `build-exe.cmd` makes `dist\FOC.exe` with PyInstaller: one file, about
@@ -237,6 +239,7 @@ Identification lands within 1 % of the real motor on all four quantities.
 | `fwsim.py` | the firmware's control arithmetic and console in Python: a stand-in for a board, and its self-check. Its saved settings are a file in the temp directory, because nothing inside one process can stand in for a page that outlives the power |
 | `vehicle.py` | the vehicle page |
 | `protocols.py` | the one-line frame and the CAN frames: build, decode, check - no UI |
+| `lab.py` | the fault lab: `fwsim` with one thing wrong and the firmware's console to find it with. Each level is a fault that really happened here, and it is won by producing the measurement that shows the cause, not by naming it |
 | `braun.py` | drawing kit: round buttons, sliders, dial, dark screens, all anti-aliased with Pillow |
 | `build-exe.cmd` | builds `dist\FOC.exe` |
 | `checks/` | bench checks against a real board, as plain text for a log: `usb_overlap.py` and `usb_fullpacket.py` (the two USB defects), `usb_state.py` (the endpoint register over SWD, without halting), `board_tune.py` (auto tune without the window), `align_reset.py` (shows `align` resetting the board - it does reset it), `v3_features.py` (console version 3, feature by feature, on a board or the firmware model), `store_flash.py` (the settings kept in flash, proved across a reset the board makes itself with `hang`), `hall_speed.py` (the speed loop on Hall sensors against the same loop on the encoder, speed by speed) |
