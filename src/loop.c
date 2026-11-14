@@ -67,6 +67,10 @@ static loop_mode mode;
 static uint32_t plant_cycles;
 static foc_dq   last_dq;
 static foc_dq   last_vdq;
+static uint8_t  i_src;          /* 0 the model, 1 the ADC pins */
+static int32_t  i_zero_a = 2048;
+static int32_t  i_zero_b = 2048;
+static int32_t  i_gain   = 8;   /* Q15 per ADC count */
 static int16_t  last_ia;
 static int16_t  last_ib;
 
@@ -226,6 +230,46 @@ foc_dq foc_loop_last_dq(void)
   return last_dq;
 }
 
+void foc_loop_set_isrc(int src)
+{
+  i_src = (src != 0) ? 1u : 0u;
+}
+
+int foc_loop_isrc(void)
+{
+  return (int)i_src;
+}
+
+void foc_loop_set_izero(int32_t a, int32_t b)
+{
+  i_zero_a = a;
+  i_zero_b = b;
+}
+
+void foc_loop_get_izero(int32_t *a, int32_t *b)
+{
+  *a = i_zero_a;
+  *b = i_zero_b;
+}
+
+void foc_loop_set_igain(int32_t gain)
+{
+  if (gain < 1)   { gain = 1; }
+  if (gain > 256) { gain = 256; }
+  i_gain = gain;
+}
+
+int32_t foc_loop_igain(void)
+{
+  return i_gain;
+}
+
+void foc_loop_adc_raw(int32_t *a, int32_t *b)
+{
+  *a = (int32_t)(ADC1->JDR1 & 0xFFFu);
+  *b = (int32_t)(ADC2->JDR1 & 0xFFFu);
+}
+
 void foc_loop_last_phase(int16_t *ia, int16_t *ib)
 {
   *ia = last_ia;
@@ -268,7 +312,21 @@ foc_dq foc_loop_step(void)
 
   /* 2. measure: two phase currents. On real hardware this is where the two
         injected ADC results would be read instead. */
-  vmotor_phase_currents(&ia, &ib);
+  if (i_src != 0u) {
+    /*
+     * Both results come from one trigger and one pair of
+     * sample-and-holds, so they are the same instant - which is what
+     * the Clarke transform below assumes and what two separate
+     * conversions would quietly not give it.
+     */
+    int32_t ra = (int32_t)(ADC1->JDR1 & 0xFFFu) - i_zero_a;
+    int32_t rb = (int32_t)(ADC2->JDR1 & 0xFFFu) - i_zero_b;
+
+    ia = q15_sat(ra * i_gain);
+    ib = q15_sat(rb * i_gain);
+  } else {
+    vmotor_phase_currents(&ia, &ib);
+  }
 
   plant_cycles = DWT->CYCCNT - plant_c0;
 

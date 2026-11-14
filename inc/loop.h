@@ -136,6 +136,28 @@ foc_dq   foc_loop_last_dq(void);
 /* The last (v_d, v_q) the loop applied: the controllers' output plus the
    feed-forward, after limiting. Zero in idle and during alignment. */
 /*
+ * Where the loop gets its phase currents.
+ *
+ * 0 is the model inside this chip, which is what every build so far
+ * has used. 1 is the two ADC pins PA0 and PA1 - a shunt amplifier, or
+ * the HIL bench driving them through an RC filter. In that mode the
+ * current this loop regulates is decided outside the chip, which is
+ * the whole point: a load put on the bench's rotor now reaches the
+ * controller.
+ *
+ * zero is what each channel reads with no current flowing; gain turns
+ * one ADC count into Q15. foc_loop_adc_raw reports the two channels
+ * untouched, which is what a calibration needs.
+ */
+void     foc_loop_set_isrc(int src);
+int      foc_loop_isrc(void);
+void     foc_loop_set_izero(int32_t a, int32_t b);
+void     foc_loop_get_izero(int32_t *a, int32_t *b);
+void     foc_loop_set_igain(int32_t gain);
+int32_t  foc_loop_igain(void);
+void     foc_loop_adc_raw(int32_t *a, int32_t *b);
+
+/*
  * The two phase currents the last period measured, Q15.
  *
  * Everything else the host can read has already been through Clarke

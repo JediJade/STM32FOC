@@ -303,6 +303,8 @@ STORE = re.compile(r"^sto state (\w+) boot (\w+) console (-?\d+) "
 VERSION = re.compile(r"^fw (\d+) cap (\d+)")
 PARAM = re.compile(r"^p (\w+) (-?\d+)$")
 DUMP = re.compile(r"^cap (\w+) div (\d+) n (\d+) state (\d+)$")
+ISRC = re.compile(r"^i src (\d+) zero (-?\d+) (-?\d+) gain (-?\d+)"
+                  r" raw (-?\d+) (-?\d+)$")
 
 MODE_REPLY = {
     "speed mode": "speed",
@@ -331,6 +333,7 @@ class BoardLink:
         self.cap_data = []                  # the last record read out
         self.cap_div = 1
         self.cap_chan = None            # which channel it holds
+        self.isrc = None                # the `i` line, as a dict
         self.cap_serial = 0                 # bumps when a dump has arrived
         self.x_every = 5                    # one `x` per this many `s`
         self.veh = {}                       # the last `v` line, console 3
@@ -601,6 +604,12 @@ class BoardLink:
                 self._dump = None
                 self.cap_serial += 1
                 return False
+        m = ISRC.match(line)
+        if m:
+            g = [int(v) for v in m.groups()]
+            self.isrc = {"src": g[0], "zero_a": g[1], "zero_b": g[2],
+                         "gain": g[3], "raw_a": g[4], "raw_b": g[5]}
+            return False
         m = DUMP.match(line)
         if m:
             self._dump = []

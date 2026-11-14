@@ -1732,6 +1732,25 @@ class BenchPage(Page):
             self.text(xc + 58, y + 1, what, 11, B.INK3)
             self.text(X1, y, other, 13, B.INK2, "ne", num=True)
 
+        self.text(xc, 652, "PHASE CURRENTS", 12, B.INK3)
+        cv.create_line(xc, 670, X1, 670, fill=B.LINE)
+        self.i_lamps = []
+        for i, (src, label) in enumerate(
+                ((0, "the model in this chip"),
+                 (1, "the pins PA0 and PA1"))):
+            y = 690 + i * 28
+            lamp = B.Lamp(cv, xc + 8, y, label, 12, B.INK2)
+            tag = f"isrc{src}"
+            cv.create_rectangle(xc, y - 10, X1, y + 10, fill="", outline="",
+                                tags=(tag,))
+            cv.tag_bind(tag, "<ButtonPress-1>",
+                        lambda e, v=src: self.set_isrc(v))
+            self.i_lamps.append((src, lamp))
+        B.RoundButton(cv, xc + 16, 760, 24, B.DARK2,
+                      lambda: self.command("izero"), label="learn the zero",
+                      label_side="e", label_size=11)
+        self.t_iraw = self.text(xc, 780, "", 11, B.INK3, width=X1 - xc)
+
     # ---- what mode is live ------------------------------------------------
 
     def mode(self):
@@ -1795,6 +1814,27 @@ class BenchPage(Page):
         link.send(text)
         self.msg = f"sent {text}. watch the hall table line."
 
+    def set_isrc(self, src):
+        """Where the loop reads its two phase currents.
+
+        Separate from the angle on purpose: either can come from inside
+        the chip or off the pins, and the four combinations are four
+        different experiments. Currents off the pins with no filter wired
+        to them reads whatever the pins happen to float at, so the drive
+        is put back to idle first.
+        """
+        link = self.app.board
+        if link is None:
+            self.msg = "connect a board first."
+            return
+        link.send("off")
+        link.send(f"isrc {int(src)}")
+        link.send("i")
+        self.msg = ("the loop will read the ADC pins. run `learn the zero` "
+                    "with the bench idle before arming."
+                    if src else
+                    "the loop is back on the model inside the chip.")
+
     # ---- drawing ----------------------------------------------------------
 
     CAL = {0: "not calibrated", 1: "calibrated", 2: "running",
@@ -1808,6 +1848,7 @@ class BenchPage(Page):
         if link is not None and now - self._asked > 0.5:
             self._asked = now
             link.send("v")
+            link.send("i")
 
         live = self.mode()
         half = live == "pins?"
@@ -1840,6 +1881,18 @@ class BenchPage(Page):
             )
         for item, text in zip(self.rows, vals):
             self.set(item, text)
+
+        info = getattr(link, "isrc", None) if link is not None else None
+        for src, lamp in self.i_lamps:
+            on = info is not None and info["src"] == src
+            lamp.set(B.GREEN if on else None)
+        if info is None:
+            self.set(self.t_iraw, "")
+        else:
+            self.set(self.t_iraw,
+                     f"pins reading {info['raw_a']} and {info['raw_b']}, "
+                     f"zero at {info['zero_a']} and {info['zero_b']}, "
+                     f"{info['gain']} Q15 per count")
         if live == "pins?":
             self.msg = ("the pins are being read, but the loop is still "
                         "steering by the model: the hall table has not been "

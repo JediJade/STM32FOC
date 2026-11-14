@@ -194,6 +194,10 @@ static void print_help(void)
   line("  brk <0|1>  brake in place of the pin");
   line("  drv <0|1>  throttle mode on / off");
   line("  hallcal    learn where the Hall edges are");
+  line("  i          where the phase currents come from, and the raw pins");
+  line("  isrc <0|1> 0 the model in this chip, 1 the ADC pins PA0 and PA1");
+  line("  iscl <n>   Q15 per ADC count when reading the pins");
+  line("  izero      learn what the two pins read with no current");
   line("  hall       the edges it learned");
   line("  olf        the one-line frame last sent");
   line("  can        CAN state; `can on` changes over to it");
@@ -562,6 +566,69 @@ static void print_extra(void)
   emit(buf, (uint16_t)(p - buf));
 }
 
+/*
+ * Where the current comes from, and what the pins are reading right now.
+ *
+ * The raw pair is the useful part when something is wrong: if it does not
+ * move when the bench changes its output, nothing past this line can be
+ * right, and the fault is in two wires and two passives rather than in any
+ * code.
+ */
+static void print_current_source(void)
+{
+  char buf[96];
+  char *p;
+  int32_t za, zb, ra, rb;
+
+  foc_loop_get_izero(&za, &zb);
+  foc_loop_adc_raw(&ra, &rb);
+
+  p = put_str(buf, "i src ");
+  p = put_int(p, (int32_t)foc_loop_isrc());
+  p = put_str(p, " zero ");
+  p = put_int(p, za);
+  *p++ = ' ';
+  p = put_int(p, zb);
+  p = put_str(p, " gain ");
+  p = put_int(p, foc_loop_igain());
+  p = put_str(p, " raw ");
+  p = put_int(p, ra);
+  *p++ = ' ';
+  p = put_int(p, rb);
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
+/*
+ * What the two pins read with no current flowing.
+ *
+ * Averaged over 40 ms, which is eight hundred conversions: the offset is
+ * subtracted from every reading for as long as the board runs, so a noisy
+ * estimate of it becomes a standing error on i_d that looks exactly like a
+ * decoupling problem and is tuned for in vain.
+ */
+static void cmd_izero(void)
+{
+  uint32_t start = millis();
+  int32_t sum_a = 0, sum_b = 0;
+  int32_t n = 0;
+
+  while ((millis() - start) < 40U) {
+    int32_t a, b;
+
+    foc_loop_adc_raw(&a, &b);
+    sum_a += a;
+    sum_b += b;
+    n++;
+    safety_watchdog_refresh();
+  }
+  if (n > 0) {
+    foc_loop_set_izero(sum_a / n, sum_b / n);
+  }
+  print_current_source();
+}
+
 /* Throttle, brake, sensor and weakening in one line, for a host to poll. */
 static void print_vehicle(void)
 {
@@ -821,6 +888,16 @@ static void dispatch(void)
     line("voltage mode");
   } else if ((arg = after_word(cmd, "cap")) != 0) {
     cmd_cap(arg);
+  } else if ((arg = after_word(cmd, "isrc")) != 0) {
+    foc_loop_set_isrc((int)parse_int(arg));
+    print_current_source();
+  } else if ((arg = after_word(cmd, "iscl")) != 0) {
+    foc_loop_set_igain(parse_int(arg));
+    print_current_source();
+  } else if (after_word(cmd, "izero") != 0) {
+    cmd_izero();
+  } else if (after_word(cmd, "i") != 0) {
+    print_current_source();
   } else if (after_word(cmd, "trig") != 0) {
     capture_trigger();
     line("trig");
