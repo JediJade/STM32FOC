@@ -1640,10 +1640,10 @@ class VehiclePage(vehicle.VehiclePage, Page):
 class BenchPage(Page):
     """What the control loop is actually driving.
 
-    The same firmware can be made to drive three different things, and
+    The same firmware can be made to drive four different things, and
     which one it is driving is the single most important fact about a
-    measurement. It was buried in two parameters on page four. Here it is
-    a choice of three, each with the reason you would pick it.
+    measurement. It was buried in two parameters on the parameters page.
+    Here it is a choice of four, each with the reason you would pick it.
     """
 
     key = "bench"
@@ -1662,10 +1662,34 @@ class BenchPage(Page):
          "the motor it believes it is turning is a model inside the same "
          "chip. Real code and real timing, no wires."),
         ("pins", "the board, through its pins", "firmware + hardware in the loop",
-         "The firmware reads its Hall pins and switches its real outputs. "
-         "What is on the other end is yours to choose: the HIL board "
-         "running the motor model, or a motor with real sensors. This is "
-         "the only mode where the loop leaves the chip."),
+         "The firmware reads its Hall pins and switches its real outputs, "
+         "and the bench board on the other end answers as a motor would. "
+         "The loop leaves the chip and still nothing can be damaged: there "
+         "is no power stage anywhere in it."),
+        ("real", "the board, into a power stage", "firmware + a real motor",
+         "The same mode as above, electrically - the firmware cannot tell "
+         "the difference - with a gate driver, a motor and a supply on the "
+         "other end. Everything this project measures about itself exists "
+         "for this moment. The list on the right is what has to be true "
+         "first."),
+    )
+
+    # What has to be true before a gate driver is switched on. Every one
+    # of these is something this firmware already measures or refuses,
+    # which is the only reason the list is this short.
+    CHECKLIST = (
+        "\u2022  dead-time measured on the real bridge, not assumed. the "
+        "board's own self-test reports it; 1.000 us here.",
+        "\u2022  the current sample lands at the same point in every pwm "
+        "period. the self-test measures the jitter.",
+        "\u2022  the break input wired to something that means stop, and "
+        "proven to cut the outputs. it is pulled up on PB12.",
+        "\u2022  the current limit and the voltage limit set for this "
+        "motor and this supply, on the parameters page.",
+        "\u2022  hall edges calibrated on the motor itself. a table "
+        "learned against the bench board is not this motor's table.",
+        "\u2022  a supply that can be turned off quickly by hand, and a "
+        "shaft that is free to turn.",
     )
 
     WIRES = (
@@ -1684,17 +1708,20 @@ class BenchPage(Page):
     def setup(self):
         self.msg = ""
         self._asked = 0.0
+        # Which of the two pin modes the operator says they are in. The
+        # board cannot answer this one.
+        self.declared = "pins"
 
     def build(self):
         cv = self.cv
         xa, xb = X0, 648
         self.cards = []
         for i, (key, _short, name, body) in enumerate(self.MODES):
-            y = 122 + i * 142
+            y = 118 + i * 112
             tag = f"mode{key}"
-            bg = cv.create_rectangle(xa, y, xb, y + 126, fill=B.PANEL,
+            bg = cv.create_rectangle(xa, y, xb, y + 100, fill=B.PANEL,
                                      outline="", tags=(tag,))
-            bar = cv.create_rectangle(xa, y, xa + 3, y + 126, fill=B.ORANGE,
+            bar = cv.create_rectangle(xa, y, xa + 3, y + 100, fill=B.ORANGE,
                                       width=0, tags=(tag,))
             lamp = B.Lamp(cv, xa + 28, y + 28, "", 14, B.INK)
             title = self.text(xa + 50, y + 18, name, 18, B.INK)
@@ -1702,7 +1729,7 @@ class BenchPage(Page):
             cv.tag_bind(tag, "<ButtonPress-1>", lambda e, k=key: self.pick(k))
             self.cards.append((key, bg, bar, lamp, title))
 
-        y = 122 + 3 * 142
+        y = 118 + 4 * 112
         self.text(xa, y, "hall edges", 12, B.INK3)
         self.text(xa, y + 20,
                   "The pins mode needs the six switching angles measured "
@@ -1725,18 +1752,25 @@ class BenchPage(Page):
             self.text(xc, y, label, 12, B.INK2)
             self.rows.append(self.text(X1, y - 2, "–", 14, B.INK, "ne"))
 
-        self.text(xc, 300, "THE TEN WIRES", 12, B.INK3)
-        self.text(xc, 320,
-                  "Only the pins mode uses them. Six carry the bridge out "
-                  "to the bench board, three carry the sensors back, one is "
-                  "the ground they are all measured against.", 12, B.INK2,
-                  width=X1 - xc)
+        self.t_right = self.text(xc, 300, "THE TEN WIRES", 12, B.INK3)
+        self.t_right_note = self.text(
+        xc, 320,
+        "Only the pins mode uses them. Six carry the bridge out to the "
+        "bench board, three carry the sensors back, one is the ground "
+        "they are all measured against.", 12, B.INK2, width=X1 - xc)
+        self.checklist = []
+        for i, line in enumerate(self.CHECKLIST):
+            self.checklist.append(
+                self.text(xc, 378 + i * 42, line, 12, B.INK2,
+                          width=X1 - xc))
         cv.create_line(xc, 388, X1, 388, fill=B.LINE)
+        self.wire_items = []
         for i, (pin, what, other) in enumerate(self.WIRES):
             y = 398 + i * 26
-            self.text(xc, y, pin, 13, B.INK, num=True)
-            self.text(xc + 58, y + 1, what, 11, B.INK3)
-            self.text(X1, y, other, 13, B.INK2, "ne", num=True)
+            self.wire_items.append(self.text(xc, y, pin, 13, B.INK, num=True))
+            self.wire_items.append(self.text(xc + 58, y + 1, what, 11, B.INK3))
+            self.wire_items.append(
+                self.text(X1, y, other, 13, B.INK2, "ne", num=True))
 
         self.text(xc, 652, "PHASE CURRENTS  \u2192  page 3", 12, B.INK3)
         cv.create_line(xc, 670, X1, 670, fill=B.LINE)
@@ -1771,17 +1805,22 @@ class BenchPage(Page):
         if hsrc is None or sens is None:
             return None
         if hsrc == 1 and sens == 1:
-            return "pins"
+            # The firmware cannot tell a bench board from a motor: both
+            # are a Hall signal on three pins. Which card is lit is the
+            # operator's own declaration, kept in this window.
+            return self.declared
         if hsrc == 1:
-            # The pins are being read, but the loop is still steering by the
-            # model: `sens 1` was refused, almost always for want of a hall
-            # table. Saying "model" here would hide the thing to fix.
+            # The pins are being read, but the loop is still steering by
+            # the model: `sens 1` was refused, almost always for want of a
+            # hall table. Saying "model" here would hide the thing to fix.
             return "pins?"
         return "model"
 
     def pick(self, key):
         app = self.app
         link = app.board
+        if key in ("pins", "real"):
+            self.declared = key
         if key == "sim":
             if link is not None:
                 app.disconnect()
@@ -1799,6 +1838,15 @@ class BenchPage(Page):
                 return
             link = app.board
         link.send("off")
+        if key == "real":
+            self.msg = ("asked for the pins, with a power stage declared. "
+                        "nothing in the firmware changed: it cannot tell a "
+                        "motor from the bench board.")
+            link.send("set hsrc 1")
+            link.send("set sens 1")
+            link.send("get")
+            link.send("v")
+            return
         if key == "model":
             link.send("set sens 0")
             link.send("set hsrc 0")
@@ -1855,6 +1903,26 @@ class BenchPage(Page):
             self._asked = now
             link.send("v")
             link.send("i")
+
+        real = self.declared == "real"
+        self.cv.itemconfigure(self.t_right,
+                              text="BEFORE A POWER STAGE" if real
+                              else "THE TEN WIRES")
+        self.cv.itemconfigure(
+            self.t_right_note,
+            text=("Nothing below is advice about electronics. Each line is "
+                  "something this firmware already measures or refuses, "
+                  "which is the only reason the list is this short."
+                  if real else
+                  "Only the pins mode uses them. Six carry the bridge out "
+                  "to the bench board, three carry the sensors back, one is "
+                  "the ground they are all measured against."))
+        for item in self.checklist:
+            self.cv.itemconfigure(item, state="normal" if real else "hidden")
+        for _pin, _what, _other in ():
+            pass
+        for item in self.wire_items:
+            self.cv.itemconfigure(item, state="hidden" if real else "normal")
 
         live = self.mode()
         half = live == "pins?"
@@ -2721,7 +2789,20 @@ class PidPage(Page):
             veh = link.veh
             pins = (veh.get("sens") == 1)
             amps = info is not None and info["src"] == 1
-            if pins and amps:
+            bench = app.bench
+            drag = (bench.state.get("load") if bench else None)
+            held = bench is not None and bench.state.get("lock")
+            if held or drag:
+                # The evening this cost: a drag left at the top of its
+                # ladder, and every measurement after it wrong in a way
+                # that reads as a controller problem.
+                self.set(self.t_target,
+                         ("the bench's shaft is clamped - nothing will move "
+                          "and no step means anything." if held else
+                          f"the bench has a drag of {drag} on its shaft. a "
+                          f"step measured under load is not the same step.")
+                         + "  page 4 takes it off.", B.RED)
+            elif pins and amps:
                 self.set(self.t_target,
                          "the loop is on the pins for both the angle and "
                          "the currents, so a step here measures whatever is "
