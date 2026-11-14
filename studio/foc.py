@@ -1782,9 +1782,8 @@ class BenchPage(Page):
         else:
             link.send("set hsrc 1")
             link.send("set sens 1")
-            self.msg = ("asked for the pins. if the angle source below does "
-                        "not say hall, the hall table has not been "
-                        "calibrated yet.")
+            self.msg = ("asked for the pins. the outputs are idle: arm "
+                        "them, or press run on the drive page.")
         link.send("get")
         link.send("v")
 
@@ -1841,7 +1840,12 @@ class BenchPage(Page):
             )
         for item, text in zip(self.rows, vals):
             self.set(item, text)
-        self.set(self.t_msg, self.msg)
+        if live == "pins?":
+            self.msg = ("the pins are being read, but the loop is still "
+                        "steering by the model: the hall table has not been "
+                        "calibrated. spin the shaft and press calibrate.")
+        self.set(self.t_msg, self.msg,
+                 B.RED if live == "pins?" else B.ORANGE)
 
 
 class App(tk.Tk):

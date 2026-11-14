@@ -405,6 +405,10 @@ class BoardLink:
         units = int(round(rpm * UNITS_PER_RPM))
         self.target_rpm = units / UNITS_PER_RPM
         self.started = True
+        # `spd` sets a target; it does not arm a board that has been put
+        # back to idle. Run meant run in the simulator and it means run
+        # here: arming first is idempotent on a board already armed.
+        self.send("on")
         self.send(f"spd {units}")
 
     def stop(self):
