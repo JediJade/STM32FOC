@@ -1631,10 +1631,223 @@ class VehiclePage(vehicle.VehiclePage, Page):
     X1 = X1
 
 
+class BenchPage(Page):
+    """What the control loop is actually driving.
+
+    The same firmware can be made to drive three different things, and
+    which one it is driving is the single most important fact about a
+    measurement. It was buried in two parameters on page four. Here it is
+    a choice of three, each with the reason you would pick it.
+    """
+
+    key = "bench"
+    title = "bench"
+    subtitle = "what the control loop is driving: a model, or something on the wires"
+
+    MODES = (
+        ("sim", "this window", "host simulator",
+         "No board at all. The motor, the inverter and the sensors are "
+         "arithmetic in this window. Nothing has to be plugged in and "
+         "nothing can be damaged. The place to learn what each control "
+         "does before touching hardware."),
+        ("model", "the board, its own model", "firmware + model motor",
+         "The stm32 runs the real control loop at 20 kHz - the same Clarke, "
+         "Park, two PI controllers and SVPWM that a motor would get - but "
+         "the motor it believes it is turning is a model inside the same "
+         "chip. Real code and real timing, no wires."),
+        ("pins", "the board, through its pins", "firmware + hardware in the loop",
+         "The firmware reads its Hall pins and switches its real outputs. "
+         "What is on the other end is yours to choose: the HIL board "
+         "running the motor model, or a motor with real sensors. This is "
+         "the only mode where the loop leaves the chip."),
+    )
+
+    WIRES = (
+        ("PA8", "phase a high", "HIL PA0"),
+        ("PA9", "phase b high", "HIL PA6"),
+        ("PA10", "phase c high", "HIL PB6"),
+        ("PB13", "phase a low", "HIL PB7"),
+        ("PB14", "phase b low", "HIL PB8"),
+        ("PB15", "phase c low", "HIL PB9"),
+        ("PB5", "hall a", "HIL PB12"),
+        ("PB6", "hall b", "HIL PB13"),
+        ("PB7", "hall c", "HIL PB14"),
+        ("GND", "a common ground", "HIL GND"),
+    )
+
+    def setup(self):
+        self.msg = ""
+        self._asked = 0.0
+
+    def build(self):
+        cv = self.cv
+        xa, xb = X0, 648
+        self.cards = []
+        for i, (key, _short, name, body) in enumerate(self.MODES):
+            y = 122 + i * 142
+            tag = f"mode{key}"
+            bg = cv.create_rectangle(xa, y, xb, y + 126, fill=B.PANEL,
+                                     outline="", tags=(tag,))
+            bar = cv.create_rectangle(xa, y, xa + 3, y + 126, fill=B.ORANGE,
+                                      width=0, tags=(tag,))
+            lamp = B.Lamp(cv, xa + 28, y + 28, "", 14, B.INK)
+            title = self.text(xa + 50, y + 18, name, 18, B.INK)
+            self.text(xa + 50, y + 46, body, 12, B.INK2, width=xb - xa - 74)
+            cv.tag_bind(tag, "<ButtonPress-1>", lambda e, k=key: self.pick(k))
+            self.cards.append((key, bg, bar, lamp, title))
+
+        y = 122 + 3 * 142
+        self.text(xa, y, "hall edges", 12, B.INK3)
+        self.text(xa, y + 20,
+                  "The pins mode needs the six switching angles measured "
+                  "once. The firmware refuses to steer by sensors it has "
+                  "not calibrated. Spin the shaft - or let the HIL board "
+                  "turn its model - and run this.", 12, B.INK2,
+                  width=xb - xa - 180)
+        B.RoundButton(cv, xb - 80, y + 44, 48, B.YELLOW,
+                      lambda: self.command("hallcal"), label="calibrate",
+                      label_size=11)
+        self.t_msg = self.text(xa, y + 96, "", 13, B.ORANGE, width=xb - xa)
+
+        xc = 688
+        self.text(xc, 122, "WHAT THE BOARD SAYS", 12, B.INK3)
+        cv.create_line(xc, 142, X1, 142, fill=B.LINE)
+        self.rows = []
+        for i, label in enumerate(("angle source", "hall signals from",
+                                   "hall code now", "hall table")):
+            y = 154 + i * 30
+            self.text(xc, y, label, 12, B.INK2)
+            self.rows.append(self.text(X1, y - 2, "–", 14, B.INK, "ne"))
+
+        self.text(xc, 300, "THE TEN WIRES", 12, B.INK3)
+        self.text(xc, 320,
+                  "Only the pins mode uses them. Six carry the bridge out "
+                  "to the bench board, three carry the sensors back, one is "
+                  "the ground they are all measured against.", 12, B.INK2,
+                  width=X1 - xc)
+        cv.create_line(xc, 388, X1, 388, fill=B.LINE)
+        for i, (pin, what, other) in enumerate(self.WIRES):
+            y = 398 + i * 26
+            self.text(xc, y, pin, 13, B.INK, num=True)
+            self.text(xc + 58, y + 1, what, 11, B.INK3)
+            self.text(X1, y, other, 13, B.INK2, "ne", num=True)
+
+    # ---- what mode is live ------------------------------------------------
+
+    def mode(self):
+        link = self.app.board
+        if link is None:
+            return "sim"
+        veh = link.veh
+        if "hsrc" not in link.params and "sens" not in veh:
+            return None
+        hsrc = link.params.get("hsrc")
+        sens = veh.get("sens", link.params.get("sens"))
+        if hsrc is None or sens is None:
+            return None
+        if hsrc == 1 and sens == 1:
+            return "pins"
+        if hsrc == 1:
+            # The pins are being read, but the loop is still steering by the
+            # model: `sens 1` was refused, almost always for want of a hall
+            # table. Saying "model" here would hide the thing to fix.
+            return "pins?"
+        return "model"
+
+    def pick(self, key):
+        app = self.app
+        link = app.board
+        if key == "sim":
+            if link is not None:
+                app.disconnect()
+            self.msg = "the board is disconnected; this window is the motor."
+            return
+        if link is None:
+            port = app.pages["board"].sel
+            if port is None:
+                self.msg = ("no board to connect to. plug it in, then pick a "
+                            "port on the board page.")
+                return
+            why = app.connect(port)
+            if why:
+                self.msg = why
+                return
+            link = app.board
+        link.send("off")
+        if key == "model":
+            link.send("set sens 0")
+            link.send("set hsrc 0")
+            self.msg = ("the board is driving its own model again. "
+                        "nothing on the pins is being believed.")
+        else:
+            link.send("set hsrc 1")
+            link.send("set sens 1")
+            self.msg = ("asked for the pins. if the angle source below does "
+                        "not say hall, the hall table has not been "
+                        "calibrated yet.")
+        link.send("get")
+        link.send("v")
+
+    def command(self, text):
+        link = self.app.board
+        if link is None:
+            self.msg = "connect a board first."
+            return
+        link.send(text)
+        self.msg = f"sent {text}. watch the hall table line."
+
+    # ---- drawing ----------------------------------------------------------
+
+    CAL = {0: "not calibrated", 1: "calibrated", 2: "running",
+           3: "too slow to measure", 4: "edges did not agree",
+           9: "refused: the drive must be running"}
+
+    def update(self):
+        app = self.app
+        link = app.board
+        now = time.perf_counter()
+        if link is not None and now - self._asked > 0.5:
+            self._asked = now
+            link.send("v")
+
+        live = self.mode()
+        half = live == "pins?"
+        for key, bg, bar, lamp, title in self.cards:
+            on = key == live or (half and key == "pins")
+            self.cv.itemconfigure(bg, fill=B.PANEL if on else B.PAPER)
+            self.cv.itemconfigure(bar, state="normal" if on else "hidden")
+            self.cv.itemconfigure(bar, fill=B.YELLOW if (on and half)
+                                  else B.ORANGE)
+            lamp.set((B.YELLOW if half else B.GREEN) if on else None)
+            self.cv.itemconfigure(title, fill=B.INK if on else B.INK2)
+
+        if link is None:
+            vals = ("this window", "nothing: there is no board",
+                    "–", "–")
+        else:
+            veh = link.veh
+            sens = veh.get("sens", link.params.get("sens"))
+            hsrc = link.params.get("hsrc")
+            hall = veh.get("hall")
+            cal = veh.get("cal")
+            vals = (
+                ("–" if sens is None else
+                 ("encoder, the model's own", "hall sensors",
+                  "observer, no sensors")[min(int(sens), 2)]),
+                ("–" if hsrc is None else
+                 ("the firmware's model", "the pins PB5 PB6 PB7")[min(int(hsrc), 1)]),
+                ("–" if hall is None else f"{int(hall):03b}"),
+                ("–" if cal is None else self.CAL.get(int(cal), str(cal))),
+            )
+        for item, text in zip(self.rows, vals):
+            self.set(item, text)
+        self.set(self.t_msg, self.msg)
+
+
 class App(tk.Tk):
-    NAV = (("drive", "drive"), ("display", "display"), ("tune", "auto tune"),
-           ("params", "parameters"), ("scope", "scope"), ("board", "board"),
-           ("vehicle", "vehicle"))
+    NAV = (("drive", "drive"), ("bench", "bench"), ("display", "display"),
+           ("tune", "auto tune"), ("params", "parameters"), ("scope", "scope"),
+           ("board", "board"), ("vehicle", "vehicle"))
     LAMP = {"ready": B.MUTE, "run": B.GREEN, "stopping": B.YELLOW,
             "tuning": B.ORANGE, "fault": B.RED}
 
@@ -1676,8 +1889,8 @@ class App(tk.Tk):
 
         self._build_rail()
         self.pages = {cls.key: cls(self) for cls in
-                      (DrivePage, DisplayPage, TunePage, ParamPage, ScopePage,
-                       BoardPage, VehiclePage)}
+                      (DrivePage, BenchPage, DisplayPage, TunePage,
+                       ParamPage, ScopePage, BoardPage, VehiclePage)}
         self.current = None
         self.show("drive")
 
@@ -1723,8 +1936,8 @@ class App(tk.Tk):
         self.nav = {}
         for i, (key, label) in enumerate(self.NAV):
             self.nav[key] = B.RoundButton(
-                cv, 50, 152 + i * 54, 38, B.DARK3, lambda k=key: self.show(k),
-                glyph=str(i + 1), glyph_size=15, label=label, label_side="e",
+                cv, 48, 146 + i * 50, 36, B.DARK3, lambda k=key: self.show(k),
+                glyph=str(i + 1), glyph_size=14, label=label, label_side="e",
                 label_size=15, label_color=B.MUTE)
         cv.create_image(RAIL / 2, 584, image=B.grille(13, 8, 12, 5))
         cv.create_line(30, 668, RAIL - 30, 668, fill=B.DARK3)
