@@ -1732,7 +1732,7 @@ class BenchPage(Page):
             self.text(xc + 58, y + 1, what, 11, B.INK3)
             self.text(X1, y, other, 13, B.INK2, "ne", num=True)
 
-        self.text(xc, 652, "PHASE CURRENTS", 12, B.INK3)
+        self.text(xc, 652, "PHASE CURRENTS  \u2192  page 3", 12, B.INK3)
         cv.create_line(xc, 670, X1, 670, fill=B.LINE)
         self.i_lamps = []
         for i, (src, label) in enumerate(
@@ -1901,10 +1901,248 @@ class BenchPage(Page):
                  B.RED if live == "pins?" else B.ORANGE)
 
 
+class CurrentPage(Page):
+    """The analog path, stage by stage, with its live numbers.
+
+    Stage two is the part of this bench that is hardest to believe,
+    because nothing about it is visible: two pins carry a PWM, two
+    passives average it, and a number appears inside the control loop.
+    When it goes wrong - a wire off, a zero never learned, a gain out by
+    a factor - every stage after the break still produces a number, and
+    the numbers all look like currents.
+
+    So the chain is drawn: counts, volts, counts about zero, Q15, and
+    what the loop is actually regulating. The stage where it stops making
+    sense is the stage that is broken.
+    """
+
+    key = "current"
+    title = "current"
+    subtitle = "the path from two pins to the number the loop regulates"
+    VDDA = 3.313          # measured on this part by the power-on self-test
+    SAMPLE = 0.08         # seconds between `i` requests
+    HISTORY = 400
+
+    def setup(self):
+        self.msg = ""
+        self._asked = 0.0
+        self.a = []
+        self.b = []
+
+    def build(self):
+        cv = self.cv
+        xa, xb = X0, 640
+
+        self.text(xa, 120, "WHERE THE LOOP READS ITS CURRENTS", 12, B.INK3)
+        self.cards = []
+        for i, (src, name, body) in enumerate((
+                (0, "the model in this chip",
+                 "The firmware's own motor model, which no wire can reach. "
+                 "Nothing on the bench can load it."),
+                (1, "the two ADC pins",
+                 "PA0 and PA1, through an RC filter from the bench board. "
+                 "A load applied over there arrives here."))):
+            y = 144 + i * 74
+            bg = cv.create_rectangle(xa, y, xb, y + 64, fill=B.PAPER,
+                                     outline="", tags=(f"cur{src}",))
+            bar = cv.create_rectangle(xa, y, xa + 3, y + 64, fill=B.ORANGE,
+                                      width=0, tags=(f"cur{src}",))
+            lamp = B.Lamp(cv, xa + 24, y + 22, "", 14, B.INK)
+            title = self.text(xa + 46, y + 12, name, 16, B.INK)
+            self.text(xa + 46, y + 34, body, 12, B.INK2, width=xb - xa - 70)
+            cv.tag_bind(f"cur{src}", "<ButtonPress-1>",
+                        lambda e, v=src: self.pick(v))
+            self.cards.append((src, bg, bar, lamp, title))
+
+        self.text(xa, 306, "THE CHAIN, AS IT IS RIGHT NOW", 12, B.INK3)
+        cv.create_line(xa, 324, X1, 324, fill=B.LINE)
+        self.chain = []
+        rows = (("raw", "what the pins convert to", "counts of 4096"),
+                ("volt", "the voltage that is", "V"),
+                ("off", "with the learned zero taken off", "counts"),
+                ("q15", "scaled by the gain", "Q15"),
+                ("loop", "and what the loop made of it", ""))
+        for i, (key, label, unit) in enumerate(rows):
+            y = 340 + i * 54
+            self.text(xa, y + 14, label, 13, B.INK2)
+            a = self.text(xa + 330, y, "–", 20, B.INK, "ne", num=True)
+            b = self.text(xa + 460, y, "–", 20, B.INK, "ne", num=True)
+            self.text(xa + 470, y + 6, unit, 11, B.INK3)
+            self.chain.append((key, a, b))
+        self.text(xa + 330, 326, "phase a", 11, B.INK3, "ne")
+        self.text(xa + 460, 326, "phase b", 11, B.INK3, "ne")
+        # The last row is not a pair of phases: it is what came out the
+        # far end of the chain, on the two axes the controller works in.
+        y = 340 + 4 * 54
+        self.text(xa + 330, y + 26, "i q", 11, B.INK3, "ne")
+        self.text(xa + 460, y + 26, "i d", 11, B.INK3, "ne")
+
+        self.text(xa, 606, "WHAT THE PINS ARE DOING", 12, B.INK3)
+        self.chart = B.Chart(cv, xa, 626, xb - xa, 132, unit="counts")
+        self.t_swing = self.text(xa, 764, "", 12, B.INK3, width=xb - xa)
+
+        xc = 680
+        self.text(xc, 120, "CALIBRATION", 12, B.INK3)
+        cv.create_line(xc, 138, X1, 138, fill=B.LINE)
+        self.t_zero = self.text(xc, 150, "", 13, B.INK2, width=X1 - xc)
+        B.RoundButton(cv, xc + 20, 212, 30, B.YELLOW,
+                      lambda: self.command("izero"), label="learn the zero",
+                      label_side="e", label_size=12)
+        self.text(xc, 244,
+                  "With nothing turning, both pins should read the same "
+                  "voltage they will read at zero current. That reading is "
+                  "subtracted from every sample afterwards, so it is worth "
+                  "doing once with the drive idle and the bench at rest.",
+                  11, B.INK3, width=X1 - xc)
+
+        self.text(xc, 330, "GAIN", 12, B.INK3)
+        self.t_gain = self.text(xc, 350, "–", 26, B.INK, num=True)
+        self.text(xc + 80, 358, "Q15 per count", 11, B.INK3)
+        B.RoundButton(cv, xc + 22, 404, 28, B.DARK2,
+                      lambda: self.nudge(-1), glyph="−", glyph_size=18)
+        B.RoundButton(cv, xc + 74, 404, 28, B.ORANGE,
+                      lambda: self.nudge(1), glyph="+", glyph_size=18)
+        self.text(xc, 432,
+                  "Eight is right for the bench as it is built: a full-scale "
+                  "Q15 current drives the pin the whole way from mid-rail to "
+                  "a rail, which is 2048 counts.", 11, B.INK3, width=X1 - xc)
+
+        self.text(xc, 510, "IS IT ARRIVING STRAIGHT", 12, B.INK3)
+        cv.create_line(xc, 528, X1, 528, fill=B.LINE)
+        self.l_move = B.Lamp(cv, xc + 8, 548, "the pins are moving", 13, B.INK2)
+        self.l_dax = B.Lamp(cv, xc + 8, 578, "i d is near zero", 13, B.INK2)
+        self.text(xc, 600,
+                  "A current can arrive and still be useless. If it is "
+                  "scaled wrongly or lands at the wrong angle, the d axis "
+                  "is where it shows: the controller fights itself and i d "
+                  "wanders. Both lamps green is the honest test that the "
+                  "wires, the filters and the angle all agree.",
+                  11, B.INK3, width=X1 - xc)
+        self.t_msg = self.text(xc, 724, "", 12, B.ORANGE, width=X1 - xc)
+
+    # ---- actions -----------------------------------------------------------
+
+    def pick(self, src):
+        link = self.app.board
+        if link is None:
+            self.msg = "connect a board first."
+            return
+        link.send("off")
+        link.send(f"isrc {int(src)}")
+        link.send("i")
+        self.msg = ("the loop will read the pins, and the outputs are idle: "
+                    "changing the source under a running loop is a step the "
+                    "controller never asked for. learn the zero, then run."
+                    if src else
+                    "the loop is back on the model in this chip, outputs "
+                    "idle.")
+
+    def command(self, text):
+        link = self.app.board
+        if link is None:
+            self.msg = "connect a board first."
+            return
+        link.send(text)
+        self.msg = f"sent {text}."
+
+    def nudge(self, step):
+        link = self.app.board
+        info = getattr(link, "isrc", None) if link is not None else None
+        if info is None:
+            self.msg = "no reading from the board yet."
+            return
+        link.send(f"iscl {max(1, min(256, info['gain'] + step))}")
+        link.send("i")
+
+    # ---- drawing -----------------------------------------------------------
+
+    def update(self):
+        app = self.app
+        link = app.board
+        now = time.perf_counter()
+        if link is not None and now - self._asked > self.SAMPLE:
+            self._asked = now
+            link.send("i")
+
+        info = getattr(link, "isrc", None) if link is not None else None
+        for src, bg, bar, lamp, title in self.cards:
+            on = info is not None and info["src"] == src
+            self.cv.itemconfigure(bg, fill=B.PANEL if on else B.PAPER)
+            self.cv.itemconfigure(bar, state="normal" if on else "hidden")
+            lamp.set(B.GREEN if on else None)
+            self.cv.itemconfigure(title, fill=B.INK if on else B.INK2)
+
+        if info is None:
+            for key, a, b in self.chain:
+                self.set(a, "–")
+                self.set(b, "–")
+            self.set(self.t_zero, "no reading from the board yet.")
+            self.set(self.t_gain, "–")
+            self.set(self.t_msg, self.msg)
+            return
+
+        ra, rb = info["raw_a"], info["raw_b"]
+        if not self.a or (ra, rb) != (self.a[-1], self.b[-1]):
+            self.a.append(ra)
+            self.b.append(rb)
+            del self.a[:-self.HISTORY]
+            del self.b[:-self.HISTORY]
+
+        oa, ob = ra - info["zero_a"], rb - info["zero_b"]
+        g = info["gain"]
+        st = link.state or {}
+        values = {
+            "raw": (ra, rb),
+            "volt": (ra / 4096.0 * self.VDDA, rb / 4096.0 * self.VDDA),
+            "off": (oa, ob),
+            "q15": (max(-32768, min(32767, oa * g)),
+                    max(-32768, min(32767, ob * g))),
+            "loop": (st.get("iq"), st.get("id")),
+        }
+        for key, a, b in self.chain:
+            va, vb = values[key]
+            dec = 3 if key == "volt" else 0
+            self.set(a, "–" if va is None else B.num(va, dec))
+            self.set(b, "–" if vb is None else B.num(vb, dec))
+        self.cv.itemconfigure(self.chain[4][1], fill=B.ORANGE)
+
+        self.set(self.t_zero,
+                 f"zero at {info['zero_a']} and {info['zero_b']} counts, "
+                 f"which is {info['zero_a'] / 4096.0 * self.VDDA:.3f} V and "
+                 f"{info['zero_b'] / 4096.0 * self.VDDA:.3f} V.")
+        self.set(self.t_gain, str(g))
+
+        if len(self.a) > 4:
+            swing = max(max(self.a) - min(self.a), max(self.b) - min(self.b))
+            lo, hi, step = B.axis(min(min(self.a), min(self.b)),
+                                  max(max(self.a), max(self.b)), 120.0)
+            self.chart.note("")
+            self.chart.draw(((self.b, B.YELLOW, 1.4), (self.a, B.WHITE, 1.6)),
+                            lo, hi, step,
+                            seconds=len(self.a) * self.SAMPLE)
+            self.set(self.t_swing,
+                     f"{swing} counts of swing over the last "
+                     f"{len(self.a) * self.SAMPLE:.0f} seconds. A rotor that "
+                     f"is turning should move them by hundreds; a few counts "
+                     f"is the converter's own noise and nothing else.")
+            self.l_move.set(B.GREEN if swing > 150 else
+                            (B.RED if info["src"] == 1 else None))
+        else:
+            self.chart.note("waiting for samples")
+
+        idd = st.get("id")
+        if idd is None or info["src"] == 0:
+            self.l_dax.set(None)
+        else:
+            self.l_dax.set(B.GREEN if abs(idd) < 400 else B.RED)
+        self.set(self.t_msg, self.msg)
+
+
 class App(tk.Tk):
-    NAV = (("drive", "drive"), ("bench", "bench"), ("display", "display"),
-           ("tune", "auto tune"), ("params", "parameters"), ("scope", "scope"),
-           ("board", "board"), ("vehicle", "vehicle"))
+    NAV = (("drive", "drive"), ("bench", "bench"), ("current", "current"),
+           ("display", "display"), ("tune", "auto tune"),
+           ("params", "parameters"), ("scope", "scope"), ("board", "board"),
+           ("vehicle", "vehicle"))
     LAMP = {"ready": B.MUTE, "run": B.GREEN, "stopping": B.YELLOW,
             "tuning": B.ORANGE, "fault": B.RED}
 
@@ -1946,8 +2184,9 @@ class App(tk.Tk):
 
         self._build_rail()
         self.pages = {cls.key: cls(self) for cls in
-                      (DrivePage, BenchPage, DisplayPage, TunePage,
-                       ParamPage, ScopePage, BoardPage, VehiclePage)}
+                      (DrivePage, BenchPage, CurrentPage, DisplayPage,
+                       TunePage, ParamPage, ScopePage, BoardPage,
+                       VehiclePage)}
         self.current = None
         self.show("drive")
 
@@ -1993,10 +2232,10 @@ class App(tk.Tk):
         self.nav = {}
         for i, (key, label) in enumerate(self.NAV):
             self.nav[key] = B.RoundButton(
-                cv, 48, 146 + i * 50, 36, B.DARK3, lambda k=key: self.show(k),
-                glyph=str(i + 1), glyph_size=14, label=label, label_side="e",
-                label_size=15, label_color=B.MUTE)
-        cv.create_image(RAIL / 2, 584, image=B.grille(13, 8, 12, 5))
+                cv, 48, 142 + i * 46, 34, B.DARK3, lambda k=key: self.show(k),
+                glyph=str(i + 1), glyph_size=13, label=label, label_side="e",
+                label_size=14, label_color=B.MUTE)
+        cv.create_image(RAIL / 2, 600, image=B.grille(13, 7, 12, 5))
         cv.create_line(30, 668, RAIL - 30, 668, fill=B.DARK3)
         self.lamp = B.Lamp(cv, 37, 696, "ready", d=11, text_color=B.WHITE,
                            off=B.DARK3)
