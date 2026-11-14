@@ -49,6 +49,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog
 
+import benchlink
 import boardlink
 import boardtune
 import braun as B
@@ -2138,11 +2139,372 @@ class CurrentPage(Page):
         self.set(self.t_msg, self.msg)
 
 
+class MotorPage(Page):
+    """The other board: the one that is being the motor.
+
+    Two windows worked, and the way they had to share the two ports was
+    the first thing anyone had to be told. One window holds both: the
+    drive on its console, the bench on its own, and nothing between them
+    but the wires they were always talking over.
+    """
+
+    key = "motor"
+    title = "motor"
+    subtitle = "the bench board standing in for the motor, and the load on it"
+    PORT_ROWS = 3
+    LADDER = (0, 1, 2, 3, 4, 6, 8, 11, 15, 20, 27, 36, 48, 64, 85, 110)
+    HISTORY = 600
+
+    def setup(self):
+        self.ports = []
+        self.sel = None
+        self.msg = ""
+        self.trace = []
+        self._scan_at = 0.0
+
+    def build(self):
+        cv = self.cv
+        xa, xb = X0, 640
+        xc = 680
+
+        self.text(xa, 120, "BENCH STATUS", 12, B.INK3)
+        self.rows = []
+        for i, chk in enumerate(self.app.checks):
+            y = 142 + i * 46
+            cv.create_rectangle(xa, y - 4, xb, y + 36, fill=B.PANEL, width=0)
+            lamp = B.Lamp(cv, xa + 20, y + 16, "", 13, B.INK)
+            title = self.text(xa + 40, y + 2, chk.title, 15, B.INK)
+            detail = self.text(xa + 40, y + 20, "", 12, B.INK3, width=xb - xa - 60)
+            self.rows.append((chk, lamp, title, detail))
+        self.verdict = self.text(xa, 472, "", 13, B.INK2, width=xb - xa)
+
+        self.text(xa, 516, "SHAFT SPEED, AS THE MODEL KNOWS IT", 12, B.INK3)
+        self.chart = B.Chart(cv, xa, 536, xb - xa, 180, unit="units/ms")
+        self.t_trace = self.text(xa, 724, "", 12, B.INK3, width=xb - xa)
+
+        # ---- the right column: the board, the load, the model
+        self.text(xc, 120, "BENCH BOARD", 12, B.INK3)
+        cv.create_line(xc, 138, X1, 138, fill=B.LINE)
+        self.port_rows = []
+        for i in range(self.PORT_ROWS):
+            y = 148 + i * 34
+            tag = f"bport{i}"
+            bg = cv.create_rectangle(xc, y, X1, y + 30, fill=B.PAPER,
+                                     outline="", tags=(tag,))
+            bar = cv.create_rectangle(xc, y, xc + 3, y + 30, fill=B.ORANGE,
+                                      width=0, tags=(tag,))
+            name = self.text(xc + 14, y + 4, "", 16, B.INK, num=True, tags=(tag,))
+            cv.tag_bind(tag, "<ButtonPress-1>", lambda e, i=i: self.pick(i))
+            self.port_rows.append((bg, bar, name))
+        self.b_conn = B.RoundButton(cv, xc + 34, 282, 46, B.ORANGE,
+                                    self.toggle, label="connect", label_size=12)
+        B.RoundButton(cv, xc + 120, 282, 36, B.DARK2, self.rescan,
+                      label="rescan", label_size=12)
+        self.t_status = self.text(xc, 340, "", 12, B.INK3, width=X1 - xc)
+
+        self.text(xc, 378, "LOAD ON THE SHAFT", 12, B.INK3)
+        self.t_load = self.text(xc, 398, "–", 34, B.INK, num=True)
+        self.t_load_unit = self.text(xc + 2, 442, "", 11, B.INK3,
+                                     width=X1 - xc)
+        B.RoundButton(cv, xc + 30, 492, 36, B.DARK2, lambda: self.step(-1),
+                      glyph="−", glyph_size=20)
+        B.RoundButton(cv, xc + 92, 492, 36, B.ORANGE, lambda: self.step(1),
+                      glyph="+", glyph_size=20)
+        B.RoundButton(cv, xc + 166, 492, 24, B.DARK2,
+                      lambda: self.bench_send("set load 0"), label="none",
+                      label_side="e", label_size=11)
+        B.RoundButton(cv, xc + 30, 548, 24, B.DARK2, self.toggle_lock,
+                      label="clamp the shaft", label_side="e", label_size=11)
+        self.text(xc, 578,
+                  "Drag opposes the rotor whichever way it turns. Raise it "
+                  "and watch the drive answer with current on page 3; raise "
+                  "it far enough and it runs out of torque.",
+                  11, B.INK3, width=X1 - xc)
+
+        self.text(xc, 652, "WHAT THE MODEL HOLDS", 12, B.INK3)
+        cv.create_line(xc, 670, X1, 670, fill=B.LINE)
+        self.model = []
+        for i, label in enumerate(("true speed  units/ms", "true angle  units",
+                                   "hall code", "phase duties  of 1800")):
+            y = 680 + i * 26
+            self.text(xc, y, label, 12, B.INK2)
+            self.model.append(self.text(X1, y - 2, "–", 14, B.INK, "ne",
+                                        num=True))
+
+    # ---- the board
+
+    def rescan(self):
+        self.ports = [p for p, _k in benchlink.list_ports()
+                      if p.startswith("COM")][:self.PORT_ROWS]
+        link = self.app.bench
+        if link is not None:
+            self.sel = link.port
+        elif self.sel not in self.ports:
+            # the drive's port is taken; offer the other one first
+            drive = self.app.board.port if self.app.board else None
+            free = [p for p in self.ports if p != drive]
+            self.sel = free[0] if free else (self.ports[0] if self.ports else None)
+
+    def pick(self, i):
+        if self.app.bench is None and i < len(self.ports):
+            self.sel = self.ports[i]
+            self.msg = ""
+
+    def toggle(self):
+        app = self.app
+        if app.bench is not None:
+            app.bench_disconnect()
+            self.msg = ""
+        elif self.sel is None:
+            self.msg = "no port to connect to. plug the bench board in, then rescan."
+        else:
+            self.msg = app.bench_connect(self.sel)
+
+    def bench_send(self, text):
+        if self.app.bench is None:
+            self.msg = "connect the bench board first."
+            return
+        self.app.bench.send(text)
+
+    def step(self, direction):
+        st = self.app.bench.state if self.app.bench else {}
+        now = st.get("load", 0) or 0
+        if direction > 0:
+            nxt = next((v for v in self.LADDER if v > now), self.LADDER[-1])
+        else:
+            nxt = next((v for v in reversed(self.LADDER) if v < now), 0)
+        self.bench_send(f"set load {nxt}")
+
+    def toggle_lock(self):
+        st = self.app.bench.state if self.app.bench else {}
+        self.bench_send("set lock %d" % (0 if st.get("lock") else 1))
+
+    # ---- drawing
+
+    def update(self):
+        app = self.app
+        link = app.bench
+        now = time.perf_counter()
+        if now - self._scan_at > 2.0 and link is None:
+            self._scan_at = now
+            self.rescan()
+
+        for i, (bg, bar, name) in enumerate(self.port_rows):
+            port = self.ports[i] if i < len(self.ports) else ""
+            on = port and port == self.sel
+            self.cv.itemconfigure(bg, fill=B.PANEL if on else B.PAPER)
+            self.cv.itemconfigure(bar, state="normal" if on else "hidden")
+            self.set(name, port)
+        self.b_conn.set_label(text="disconnect" if link else "connect")
+        self.b_conn.set_color(B.DARK2 if link else B.ORANGE)
+        self.set(self.t_status,
+                 self.msg or (f"{link.port}, {link.version or 'no answer yet'}"
+                              if link else
+                              "the bench board has its own port, separate "
+                              "from the drive's."))
+
+        for chk, lamp, title, detail in self.rows:
+            colour = (B.MUTE if chk.ok is None else
+                      (B.GREEN if chk.ok else B.RED))
+            lamp.set(colour)
+            self.set(detail, chk.detail or chk.explain)
+            self.set(title, chk.title, B.INK if chk.ok is not False else B.RED)
+
+        bad = [c for c in app.checks if c.ok is False]
+        if bad:
+            self.set(self.verdict,
+                     "Something is wrong: " + "; ".join(c.wrong for c in bad)
+                     + ".", B.RED)
+        elif all(c.ok for c in app.checks):
+            self.set(self.verdict,
+                     "Everything checks out. The drive is controlling a motor "
+                     "that lives in the other microcontroller.", B.INK2)
+        else:
+            self.set(self.verdict,
+                     "Waiting for both boards and for the drive to switch.",
+                     B.ORANGE)
+
+        st = link.state if link else {}
+        load, lock = st.get("load"), st.get("lock")
+        if load is None:
+            self.set(self.t_load, "–")
+            self.set(self.t_load_unit, "no bench board, or a firmware "
+                                       "without the load setting")
+        elif lock:
+            self.set(self.t_load, "clamped", B.RED)
+            self.set(self.t_load_unit, "the shaft is held still")
+        else:
+            self.set(self.t_load, str(load), B.ORANGE if load else B.INK)
+            self.set(self.t_load_unit, "drag, 0 is a free shaft")
+
+        duty = "  ".join(str(st.get(k, "–")) for k in ("da", "db", "dc"))
+        for item, value in zip(self.model,
+                               (st.get("spd"), st.get("ang"),
+                                None if st.get("hall") is None
+                                else f"{st['hall']:03b}", duty)):
+            self.set(item, "–" if value is None else str(value))
+
+        spd = st.get("spd")
+        if spd is not None:
+            self.trace.append(spd)
+            del self.trace[:-self.HISTORY]
+        if len(self.trace) > 3:
+            lo, hi, step = B.axis(min(self.trace), max(self.trace), 200.0)
+            self.chart.note("")
+            self.chart.draw([(self.trace, B.ORANGE, 1.8, True)], lo, hi, step,
+                            seconds=len(self.trace) / benchlink.POLL_HZ)
+            self.set(self.t_trace,
+                     "the model's own speed, which the drive cannot see: it "
+                     "only knows what its Hall pins told it.")
+        else:
+            self.chart.note("connect the bench board")
+
+
+class SyncPage(Page):
+    """The same quantity, measured on both boards, side by side."""
+
+    key = "sync"
+    title = "sync"
+    subtitle = "what each board thinks is happening, next to each other"
+
+    ROWS = (("speed", "speed", "units/ms", 0.08),
+            ("angle", "electrical angle", "units", None),
+            ("current", "q-axis current", "Q15 counts", 0.35),
+            ("volt", "phase voltage amplitude", "Q15 counts", 0.35))
+
+    def build(self):
+        cv = self.cv
+        xa, xb = X0, 660
+        self.text(xa, 120, "THE DRIVE", 12, B.INK3)
+        self.text(xa + 260, 120, "THE BENCH", 12, B.INK3)
+        self.text(xb - 10, 120, "APART BY", 12, B.INK3, "ne")
+        self.cells = {}
+        for i, (key, label, unit, _tol) in enumerate(self.ROWS):
+            y = 146 + i * 76
+            cv.create_rectangle(xa, y - 8, xb, y + 56, fill=B.PANEL, width=0)
+            self.text(xa + 16, y + 30, f"{label}   {unit}", 12, B.INK3)
+            self.cells[key] = (
+                self.text(xa + 16, y, "–", 26, B.INK, num=True),
+                self.text(xa + 276, y, "–", 26, B.INK, num=True),
+                self.text(xb - 10, y + 4, "", 20, B.INK2, "ne", num=True))
+
+        self.verdict = self.text(xa, 464, "", 14, B.INK, width=xb - xa)
+
+        self.text(xa, 524, "WHAT ACTUALLY CROSSES THE WIRES", 12, B.INK3)
+        self.text(xa, 544,
+                  "The rotor angle, always. The phase currents too, once "
+                  "page 3 is set to the pins. The drive works its speed out "
+                  "from the Hall edges arriving on three of them; the bench "
+                  "knows the true speed of the model that produced those "
+                  "edges. Neither board can see the other's number, so when "
+                  "the two agree the loop really is closed through the "
+                  "copper - and if the currents are still coming from the "
+                  "model inside the drive, the current row will not agree "
+                  "and is not meant to.", 12, B.INK3, width=xb - xa)
+
+        xc = 700
+        self.text(xc, 120, "THE REVERSE CHECK", 12, B.INK3)
+        cv.create_line(xc, 138, X1, 138, fill=B.LINE)
+        self.reverse = self.text(xc, 150, "", 12, B.INK2, width=X1 - xc)
+        self.text(xc, 300, "READ IT BACKWARDS", 12, B.INK3)
+        self.text(xc, 320,
+                  "The duty the bench measured on the drive's pins, turned "
+                  "back into the voltage the drive says it applied. Two "
+                  "chips, two measurements, one number - arrived at from "
+                  "opposite ends.", 11, B.INK3, width=X1 - xc)
+
+    def update(self):
+        app = self.app
+        link, bench = app.board, app.bench
+        d = (link.state or {}) if link else {}
+        b = bench.state if bench else {}
+
+        def put(key, left, right, tol):
+            l_item, r_item, diff = self.cells[key]
+            if left is None or right is None:
+                self.set(l_item, "–")
+                self.set(r_item, "–")
+                self.set(diff, "")
+                return
+            self.set(l_item, f"{left:,.0f}")
+            self.set(r_item, f"{right:,.0f}")
+            span = max(abs(left), abs(right), 1.0)
+            err = abs(left - right) / span
+            self.set(diff, f"{err * 100:.1f} %",
+                     B.GREEN if (tol and err <= tol) else B.RED)
+
+        put("speed", d.get("spd"), b.get("spd"), 0.08)
+
+        d_ang, b_ang = d.get("ang"), b.get("ang")
+        l_item, r_item, diff = self.cells["angle"]
+        if d_ang is None or b_ang is None:
+            self.set(l_item, "–")
+            self.set(r_item, "–")
+            self.set(diff, "")
+        else:
+            wrap = (d_ang - b_ang) % 65536
+            wrap = wrap if wrap < 32768 else wrap - 65536
+            self.set(l_item, f"{d_ang:,}")
+            self.set(r_item, f"{b_ang:,}")
+            self.set(diff, f"{wrap / 65536 * 360:+.0f}°",
+                     B.GREEN if abs(wrap) < 6000 else B.MUTE)
+
+        ia, ib, ang = b.get("ia"), b.get("ib"), b.get("ang")
+        bench_q = None
+        if None not in (ia, ib, ang):
+            beta = (ia + 2.0 * ib) / 1.7320508075688772
+            th = ang / 65536.0 * 2.0 * math.pi
+            bench_q = -ia * math.sin(th) + beta * math.cos(th)
+        put("current", d.get("iq"), bench_q, 0.35)
+
+        vd, vq = (link.vd, link.vq) if link else (None, None)
+        drive_v = (math.hypot(vd, vq) if None not in (vd, vq) else None)
+        duties = [b.get(k) for k in ("da", "db", "dc")]
+        bench_v = None
+        if None not in duties:
+            # the spread of the three duties is the line-to-line amplitude;
+            # over root three it is the phase amplitude, in the same Q15
+            # scale the drive reports its voltage vector in
+            bench_v = (max(duties) - min(duties)) / 1800.0 * 32768.0 / 1.7320508
+        put("volt", drive_v, bench_v, 0.35)
+
+        chk = next(c for c in app.checks if c.key == "sync")
+        if bench is None:
+            self.set(self.verdict,
+                     "Connect the bench board on page 4 to compare them.",
+                     B.INK3)
+        elif chk.ok is None:
+            self.set(self.verdict, "Waiting for both boards to say something.",
+                     B.INK3)
+        elif chk.ok:
+            self.set(self.verdict,
+                     "The two agree. The drive is controlling a motor it can "
+                     "only reach through wires.", B.GREEN)
+        else:
+            self.set(self.verdict,
+                     "The two do not agree. If page 2 is not set to the "
+                     "pins, the drive is steering by its own model and the "
+                     "rotor over there is only being dragged along.",
+                     B.ORANGE)
+
+        if drive_v is not None and bench_v is not None:
+            self.set(self.reverse,
+                     f"The drive reports a voltage vector of {drive_v:,.0f} "
+                     f"counts. The bench measured duties spread over "
+                     f"{max(duties) - min(duties)} of 1800 on the drive's own "
+                     f"pins, which is {bench_v:,.0f} counts of phase "
+                     f"amplitude. Nothing told either board the other's "
+                     f"answer.")
+        else:
+            self.set(self.reverse, "needs both boards, and the drive "
+                                   "switching.")
+
+
 class App(tk.Tk):
     NAV = (("drive", "drive"), ("bench", "bench"), ("current", "current"),
-           ("display", "display"), ("tune", "auto tune"),
-           ("params", "parameters"), ("scope", "scope"), ("board", "board"),
-           ("vehicle", "vehicle"))
+           ("motor", "motor"), ("sync", "sync"), ("display", "display"),
+           ("tune", "auto tune"), ("params", "parameters"),
+           ("scope", "scope"), ("board", "board"), ("vehicle", "vehicle"))
     LAMP = {"ready": B.MUTE, "run": B.GREEN, "stopping": B.YELLOW,
             "tuning": B.ORANGE, "fault": B.RED}
 
@@ -2170,6 +2532,16 @@ class App(tk.Tk):
         self.board = None
         self.btune = None               # auto tune for the board, if any
         self.board_targets = {"cbw": 400.0, "sbw": 20.0}
+        # The bench board, when this window is holding it as well. It is
+        # not a second drive: nothing in here joins the two, they are
+        # joined by the wires between the boards.
+        self.bench = None
+        self.checks = benchlink.build_checks()
+        # The drive is asked a hundred times a second and the bench
+        # twenty; both numbers ride the loop's ripple. The comparison is
+        # between what each board says on average, or the lamp reports
+        # the sampling instant rather than the agreement.
+        self._drive_spd_mean = None
         self._rejoin = None             # [port, give up at, try next at]: on CAN
         self._sim_params = SimParams(self)
         self._board_params = BoardParams(self)
@@ -2184,9 +2556,9 @@ class App(tk.Tk):
 
         self._build_rail()
         self.pages = {cls.key: cls(self) for cls in
-                      (DrivePage, BenchPage, CurrentPage, DisplayPage,
-                       TunePage, ParamPage, ScopePage, BoardPage,
-                       VehiclePage)}
+                      (DrivePage, BenchPage, CurrentPage, MotorPage,
+                       SyncPage, DisplayPage, TunePage, ParamPage, ScopePage,
+                       BoardPage, VehiclePage)}
         self.current = None
         self.show("drive")
 
@@ -2232,10 +2604,10 @@ class App(tk.Tk):
         self.nav = {}
         for i, (key, label) in enumerate(self.NAV):
             self.nav[key] = B.RoundButton(
-                cv, 48, 142 + i * 46, 34, B.DARK3, lambda k=key: self.show(k),
-                glyph=str(i + 1), glyph_size=13, label=label, label_side="e",
-                label_size=14, label_color=B.MUTE)
-        cv.create_image(RAIL / 2, 600, image=B.grille(13, 7, 12, 5))
+                cv, 46, 138 + i * 42, 32, B.DARK3, lambda k=key: self.show(k),
+                glyph=str(i + 1), glyph_size=12, label=label, label_side="e",
+                label_size=13, label_color=B.MUTE)
+        cv.create_image(RAIL / 2, 626, image=B.grille(13, 5, 12, 5))
         cv.create_line(30, 668, RAIL - 30, 668, fill=B.DARK3)
         self.lamp = B.Lamp(cv, 37, 696, "ready", d=11, text_color=B.WHITE,
                            off=B.DARK3)
@@ -2320,6 +2692,22 @@ class App(tk.Tk):
             self.disp[key] = 0.0
         for key in ("drive", "display", "scope"):
             self.pages[key].rebuild()
+
+    def bench_connect(self, port):
+        """Open the bench board's console. Its own port, never the drive's."""
+        if self.board is not None and port == self.board.port:
+            return "that is the drive's port."
+        try:
+            self.bench = benchlink.BenchLink(port)
+        except OSError as exc:
+            self.bench = None
+            return str(exc)
+        return ""
+
+    def bench_disconnect(self):
+        if self.bench is not None:
+            self.bench.close()
+            self.bench = None
 
     def quit_app(self):
         self.disconnect()
@@ -2425,10 +2813,26 @@ class App(tk.Tk):
 
     # ---- the frame loop
 
+    def _bench_tick(self):
+        if self.bench is not None:
+            self.bench.poll()
+            if self.bench.error:
+                self.bench_disconnect()
+        if self.board is not None and self.board.state:
+            spd = self.board.state.get("spd")
+            if isinstance(spd, int):
+                self._drive_spd_mean = (
+                    float(spd) if self._drive_spd_mean is None else
+                    self._drive_spd_mean + 0.02 * (spd - self._drive_spd_mean))
+        else:
+            self._drive_spd_mean = None
+        benchlink.run_checks(self.checks, self.bench, self._drive_spd_mean)
+
     def _tick(self):
         now = time.perf_counter()
         elapsed = min(now - self._last, 0.08)
         self._last = now
+        self._bench_tick()
         a = 1.0 - math.exp(-elapsed / 0.12)
         disp = self.disp
 
