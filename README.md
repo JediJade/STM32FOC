@@ -11,6 +11,14 @@ Blue Pill with no gate driver and no motor, so they get measured first.
 Same bare metal style as the USB HID project: no HAL, no middleware, CMSIS
 register headers only.
 
+New here? [QUICKSTART.th.md](QUICKSTART.th.md) is twenty minutes from
+nothing to a motor turning on the screen, in Thai, and needs no board to be
+worth reading.
+
+The motor can also be a second chip: [STM32FOC-HIL](https://github.com/JediJade/STM32FOC-HIL)
+is a hardware-in-the-loop bench built from another Blue Pill, running this
+firmware's own `vmotor.c` unchanged.
+
 The other three documents: [DEVELOPMENT.md](DEVELOPMENT.md)
 ([ภาษาไทย](DEVELOPMENT.th.md)) is how to change this firmware, and
 [SOFTWARE.md](SOFTWARE.md) ([ภาษาไทย](SOFTWARE.th.md)) is the host-side half -
@@ -516,6 +524,78 @@ What is still true: the page is erased and rewritten whole on every `save`,
 which is about 10,000 saves on this part and not a thing anybody does in a
 loop; and `openocd program` leaves the page alone, so a reflash of the
 firmware keeps the settings.
+
+## Version 0.4: the loop leaves the chip
+
+The v0.3 section above says, and was right to say, that the motor is still
+the model inside the firmware and nothing is connected to the new pins. This
+is the version that retires that sentence.
+
+A second STM32F103 - [STM32FOC-HIL](https://github.com/JediJade/STM32FOC-HIL) -
+stands in for the motor. It runs `vmotor.c` from this repository, copied
+without a change, measures this board's three phase duties with hardware
+timers, and sends the rotor angle back as Hall signals. Ten wires, no power
+stage, no gate driver, no motor and no battery anywhere in it.
+
+Two halves cross, and they are independent:
+
+| | crosses on | turned on by | what it proves |
+| --- | --- | --- | --- |
+| the rotor angle | PB5, PB6, PB7 | `set hsrc 1`, `set sens 1` | the Hall path: edges, calibration, the speed estimate |
+| the phase currents | PA0, PA1 | `isrc 1` | the current path: the ADC front end, its zero, its scaling |
+
+**The angle.** `hallcal` measured the six switching angles from a signal
+produced in another chip, and the speed loop then held 1500 units/ms on an
+angle that crosses on a wire. The two boards' speeds agree to 0.2 % - neither
+can see the other's number, so when they agree the loop really is closed
+through the copper.
+
+**The currents.** `isrc 1` takes i_a and i_b from PA0 and PA1 instead of from
+the model. Nothing new had to be set up for it: the power-on self-tests
+already leave ADC1 and ADC2 in injected simultaneous mode on a TIM1 trigger,
+converting both pins from one trigger - that path was built so a real front
+end could be dropped into it. `izero` learns what the two pins read at zero
+current, averaged over 40 ms, because that offset is subtracted from every
+reading afterwards and a noisy estimate of it becomes a standing error on
+i_d that looks exactly like a decoupling problem.
+
+That is the half that makes a load mean something. With a brake applied to
+the rotor inside the other chip, at a held speed of 1200 units/ms:
+
+```
+  load   drive spd   drive iq   drive id
+     0        1190       1331         42
+     8        1169       2316        -12
+    27        1181       4151         80
+    48        1201       6226          2
+    85        1416      10240       -360
+```
+
+`iq` is this board's own reading off its own pins, and it rises nearly five
+times while the speed holds. With only the angle crossing, that column did
+not move at all. `id` stays within a few tens of zero until the drive runs
+out at a drag of 85, which is the part that says the current is arriving at
+the right angle and not merely arriving.
+
+**`cap iab`** records both phase currents into the one buffer, alternately:
+128 pairs, each pair measured in the same interrupt. A current vector drawn
+from two separate records is not a vector. The studio's scope page draws the
+three phase currents and the current vector from the board because of it.
+
+**Two pages in `studio/`.** *bench* is what the control loop is driving, as
+a choice of three with the reason you would pick each, and it draws the
+difference between asking for the pins and getting them - the firmware
+refuses to steer by sensors it has not calibrated, and that state is amber
+rather than a quiet fall back to the model. *current* is the analog path
+stage by stage with live numbers: counts, volts, counts about the learned
+zero, Q15, and what the loop made of it. When that path breaks, every stage
+after the break still produces a number and all of them look like currents.
+
+The console commands are `isrc`, `iscl` and `izero`, and they are commands
+rather than numbered parameters on purpose: the flash store keys its record
+on how many parameters the console has, so adding two would throw away every
+board's saved settings and Hall table to announce a feature those boards may
+not even be wired for.
 
 ## The gate on MOE
 
