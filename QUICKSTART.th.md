@@ -26,7 +26,7 @@
 ## 2. เอาโค้ดมา
 
 ```
-git clone --branch v0.4.0 https://github.com/JediJade/STM32FOC.git
+git clone --branch v0.5.0 https://github.com/JediJade/STM32FOC.git
 ```
 
 ถ้าไม่มี git ให้ดาวน์โหลดไฟล์ zip จากหน้า
@@ -87,7 +87,8 @@ make PROJECT=STM32FOC
 Get-FileHash .\build\STM32FOC.hex -Algorithm SHA256
 ```
 
-ต้องขึ้นต้นด้วย `C05B0248` ตรงกับที่ประกาศไว้ใน release v0.4.0
+ต้องขึ้นต้นด้วย `C05B0248` ตรงกับที่ประกาศไว้ใน release v0.5.0
+(เฟิร์มแวร์ไม่ได้เปลี่ยนตั้งแต่ v0.4.0 ค่านี้จึงเหมือนเดิม)
 ถ้าไม่ตรงแปลว่า toolchain คนละตัวกัน
 
 ---
