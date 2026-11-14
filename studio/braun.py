@@ -602,7 +602,7 @@ class Chart:
             self.cv.itemconfigure(item, text="")
 
     def draw(self, series, lo, hi, step=None, seconds=None, xlabel="",
-             dec=None, readout=None):
+             dec=None, readout=None, forward=False):
         """series: (values, colour, width, fill_under). Oldest sample left.
 
         lo/hi/step come from axis(); seconds, if given, labels the time
@@ -645,7 +645,12 @@ class Chart:
                 xticks.append(t)
                 t += tstep
             for t in xticks:
-                xx = W * (1.0 - t / seconds)
+                # A history runs right to left and ends at now; a step
+                # response runs left to right and starts at zero. Same
+                # axis, opposite direction, and labelling one as the
+                # other is how a step response comes to look like
+                # something that happened ten milliseconds ago.
+                xx = W * (t / seconds if forward else 1.0 - t / seconds)
                 if 0 < xx < W - 1:
                     dr.line([(xx, 0), (xx, H)], fill=grid, width=1)
         else:
@@ -698,9 +703,11 @@ class Chart:
         for i, item in enumerate(self.x_items):
             if i < len(xticks):
                 t = xticks[i]
-                cv.coords(item, self.px + self.pw * (1.0 - t / seconds),
+                frac = (t / seconds) if forward else (1.0 - t / seconds)
+                cv.coords(item, self.px + self.pw * frac,
                           self.py + self.ph + 5)
-                cv.itemconfigure(item, text="now" if t == 0 else num(-t, 0))
+                cv.itemconfigure(item, text=num(t, 0) if forward else
+                                 ("now" if t == 0 else num(-t, 0)))
             else:
                 cv.itemconfigure(item, text="")
         cv.itemconfigure(self.t_x, text=xlabel or ("seconds" if seconds else ""))

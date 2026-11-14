@@ -590,6 +590,11 @@ class SimParams:
         return f"loaded {len(known)} parameters"
 
 
+# The board's parameters by key. BY_KEY is the simulator's table and does
+# not have the firmware's own gains in it.
+BOARD_BY_KEY = {q.key: q for q in BOARD_PARAMS}
+
+
 class BoardParams:
     """The parameters page, editing the board (console version 2)."""
 
@@ -2500,10 +2505,273 @@ class SyncPage(Page):
                                    "switching.")
 
 
+class PidPage(Page):
+    """The two controllers by hand, with the step that shows the change.
+
+    Auto tune finds the motor and picks gains from a bandwidth. That is
+    the right way round when the motor is unknown, and no way at all to
+    learn what a gain does. Here both loops are out in the open with a
+    plus and a minus beside each number, and one button that applies a
+    step and draws what came back. The previous trace stays underneath,
+    so a change is a comparison rather than a memory.
+    """
+
+    key = "pid"
+    title = "pid"
+    subtitle = "the two controllers by hand, and the step that shows what you changed"
+
+    # A current step big enough to see and far below anything that could
+    # matter, and a speed step of about 915 rpm. Same as auto tune uses.
+    I_STEP = 2000
+    I_DIV = 2                      # 256 samples at 100 us: 25.6 ms
+    S_STEP = 1000
+    S_DIV = 40                     # 256 samples at 2 ms: 512 ms
+    FRAME = 0.020                  # the window's own tick, for the waits
+
+    LOOPS = (
+        ("current", "CURRENT LOOP", ("ckp", "cki"), "i d step, 25.6 ms",
+         "counts"),
+        ("speed", "SPEED LOOP", ("skp", "ski"), "speed step, 512 ms",
+         "units/ms"),
+    )
+
+    def setup(self):
+        self.msg = ""
+        self.job = None            # the generator running a step test
+        self.which = None          # which loop it is measuring
+        self.traces = {}           # loop -> [(values, step, dt_ms), ...]
+
+    def build(self):
+        cv = self.cv
+        xa, xb = X0, 580
+        self.rows = {}
+        self.buttons = {}
+        y = 120
+        for key, label, gains, what, _unit in self.LOOPS:
+            self.text(xa, y, label, 12, B.INK3)
+            self.text(xa + 160, y, what, 11, B.INK3)
+            cv.create_line(xa, y + 18, xb, y + 18, fill=B.LINE)
+            for i, name in enumerate(gains):
+                q = BOARD_BY_KEY[name]
+                yy = y + 32 + i * 56
+                self.text(xa, yy + 10, q.name, 14, B.INK)
+                self.text(xa + 250, yy + 4, "Q15", 11, B.INK3)
+                value = self.text(xa + 240, yy, "–", 24, B.INK, "ne",
+                                  num=True)
+                B.RoundButton(cv, xa + 310, yy + 12, 30, B.DARK2,
+                              lambda n=name: self.nudge(n, -1),
+                              glyph="−", glyph_size=17)
+                B.RoundButton(cv, xa + 358, yy + 12, 30, B.ORANGE,
+                              lambda n=name: self.nudge(n, 1),
+                              glyph="+", glyph_size=17)
+                self.rows[name] = value
+            btn = B.RoundButton(cv, xa + 34, y + 176, 44, B.YELLOW,
+                                lambda k=key: self.measure(k),
+                                label="measure the step", label_side="e",
+                                label_size=12)
+            self.buttons[key] = btn
+            y += 230
+
+        self.t_msg = self.text(xa, 586, "", 12, B.ORANGE, width=xb - xa)
+
+        xc = 620
+        self.text(xc, 120, "WHAT THE TWO DO", 12, B.INK3)
+        self.text(xc, 142,
+                  "The current loop runs every 50 us and decides what "
+                  "voltage puts the asked-for current into the winding. "
+                  "Its proportional gain is the one that makes it fast; "
+                  "its integral gain is the one that removes the standing "
+                  "error, and too much of it is what rings.",
+                  12, B.INK3, width=X1 - xc)
+        self.text(xc, 246,
+                  "The speed loop runs every millisecond and decides what "
+                  "current to ask for. It can only be as good as the loop "
+                  "underneath it, so tune the current one first.",
+                  12, B.INK3, width=X1 - xc)
+
+        self.text(xc, 330, "READING THE STEP", 12, B.INK3)
+        self.text(xc, 352,
+                  "Overshoot is how far past the target it went, as a "
+                  "percentage of the step. Settling is how long until it "
+                  "stayed inside five percent of it. Fast and ringing is "
+                  "not better than slow and still: on a real machine the "
+                  "ringing is current the motor is heating itself with.",
+                  12, B.INK3, width=X1 - xc)
+
+        self.text(xc, 470, "AND WHAT IT IS TUNING", 12, B.INK3)
+        self.t_target = self.text(xc, 492, "", 12, B.INK2, width=X1 - xc)
+
+        self.text(X0, 596, "THE LAST TWO STEPS", 12, B.INK3)
+        self.chart = B.Chart(cv, X0, 616, X1 - X0, 150, unit="")
+        self.t_metrics = self.text(X0, 776, "", 12, B.INK2, width=X1 - X0)
+
+    # ---- changing a gain ---------------------------------------------------
+
+    def nudge(self, name, direction):
+        app = self.app
+        if app.board is None:
+            self.msg = "connect the board: these are the board's own gains."
+            return
+        q = BOARD_BY_KEY[name]
+        now = app.board.params.get(name, q.default)
+        ok, why = app.param_source().set(q, now + direction * q.step)
+        self.msg = why if not ok else ""
+
+    # ---- the step test -----------------------------------------------------
+
+    def measure(self, which):
+        if self.app.board is None:
+            self.msg = "connect the board first."
+            return
+        if self.job is not None:
+            self.msg = "a step is already running."
+            return
+        self.which = which
+        self.job = self._run(which)
+        self.msg = ""
+
+    def _run(self, which):
+        """Arm the recorder, apply the step, read it back. One frame per
+        yield, so the window keeps drawing while it happens."""
+        link = self.app.board
+        channel, div, step, cmd, dt = (
+            ("id", self.I_DIV, self.I_STEP, f"id {self.I_STEP}", 0.10)
+            if which == "current" else
+            ("spd", self.S_DIV, self.S_STEP, f"spd {self.S_STEP}", 2.0))
+
+        # Wait for the shaft, not just for the switching to stop. The
+        # model's winding carries back-EMF current while the rotor is
+        # still coasting, so a step applied then starts from wherever
+        # that current happens to be and the trace is not a step at all.
+        link.send("off")
+        quiet = [0.0]
+        deadline = time.perf_counter() + 8.0
+        while time.perf_counter() < deadline:
+            if abs(link.units) < 80.0:
+                quiet[0] = quiet[0] or time.perf_counter()
+                if time.perf_counter() - quiet[0] > 0.2:
+                    break
+            else:
+                quiet[0] = 0.0
+            yield
+        # Arm, and for the current loop put the loop in current mode
+        # first: `id` sets a target and nothing else, so without this the
+        # loop sits in idle applying no voltage and the record is twelve
+        # milliseconds of the model drifting. `spd 0` is what engages the
+        # current controller with the shaft asked to stand still.
+        link.send("on")
+        for _ in range(int(0.3 / self.FRAME)):
+            yield
+        if which == "current":
+            link.send("spd 0")
+            for _ in range(int(0.6 / self.FRAME)):
+                yield
+        serial = link.cap_serial
+        link.send(f"cap {channel} {div}")
+        link.send(cmd)
+        deadline = time.perf_counter() + 256 * div * 50e-6 + 3.0
+        while link.cap_state != 3 and time.perf_counter() < deadline:
+            yield
+        link.send("dump")
+        deadline = time.perf_counter() + 3.0
+        while link.cap_serial == serial and time.perf_counter() < deadline:
+            yield
+        if link.cap_serial == serial:
+            self.msg = "the record did not come back."
+        else:
+            rows = self.traces.setdefault(which, [])
+            rows.append((list(link.cap_data), step, dt))
+            del rows[:-2]
+        link.send("id 0" if which == "current" else "spd 0")
+        for _ in range(int(0.3 / self.FRAME)):
+            yield
+        link.send("off")
+
+    # ---- drawing -----------------------------------------------------------
+
+    def update(self):
+        app = self.app
+        link = app.board
+
+        if self.job is not None:
+            try:
+                next(self.job)
+            except StopIteration:
+                self.job = None
+
+        for name, item in self.rows.items():
+            if link is None:
+                self.set(item, "–")
+            else:
+                q = BOARD_BY_KEY[name]
+                self.set(item, B.num(link.params.get(name, q.default)))
+
+        for key, btn in self.buttons.items():
+            busy = self.job is not None
+            btn.set_color(B.MUTE if busy else B.YELLOW)
+            btn.set_label(text="measuring…" if (busy and key == self.which)
+                          else "measure the step")
+
+        if link is None:
+            self.set(self.t_target, "no board connected. these are the "
+                                    "board's own gains, so this page needs "
+                                    "one.")
+        else:
+            info = getattr(link, "isrc", None)
+            veh = link.veh
+            pins = (veh.get("sens") == 1)
+            amps = info is not None and info["src"] == 1
+            if pins and amps:
+                self.set(self.t_target,
+                         "the loop is on the pins for both the angle and "
+                         "the currents, so a step here measures whatever is "
+                         "on the other end of the wires - the bench board's "
+                         "motor, or a real one.", B.INK2)
+            elif pins:
+                self.set(self.t_target,
+                         "the angle comes off the pins but the currents "
+                         "still come from the model in this chip, so a step "
+                         "measures that model's winding, not the bench's.",
+                         B.ORANGE)
+            else:
+                self.set(self.t_target,
+                         "the loop is on the model inside the chip. a step "
+                         "measures that model. page 2 and page 3 move it "
+                         "onto the wires.", B.INK3)
+
+        rows = self.traces.get(self.which or "current", [])
+        if not rows:
+            self.chart.note("press measure, and the step will be drawn here")
+            self.set(self.t_metrics, "")
+        else:
+            self.chart.note("")
+            series = []
+            lines = []
+            for i, (data, step, dt) in enumerate(rows):
+                newest = i == len(rows) - 1
+                series.append((data, B.ORANGE if newest else B.MUTE,
+                               1.8 if newest else 1.2, newest))
+                m = boardtune.step_metrics(data, step, dt)
+                settle = ("%d ms" % m["settle_ms"] if m["settle_ms"] is not None
+                          else "did not settle")
+                lines.append(("latest" if newest else "before")
+                             + f":  {m['overshoot']:.0f} % overshoot, {settle}")
+            span = max(max(d) for d, _s, _dt in rows)
+            lo, hi, stp = B.axis(-span / 8.0, span * 1.15, 200.0)
+            ms = len(rows[-1][0]) * rows[-1][2]
+            self.chart.unit(self.LOOPS[0][4] if self.which == "current"
+                            else self.LOOPS[1][4])
+            self.chart.draw(series, lo, hi, stp, seconds=ms, forward=True,
+                            xlabel="milliseconds after the step")
+            self.set(self.t_metrics, "     ".join(reversed(lines)))
+
+        self.set(self.t_msg, self.msg)
+
+
 class App(tk.Tk):
     NAV = (("drive", "drive"), ("bench", "bench"), ("current", "current"),
            ("motor", "motor"), ("sync", "sync"), ("display", "display"),
-           ("tune", "auto tune"), ("params", "parameters"),
+           ("tune", "auto tune"), ("pid", "pid"), ("params", "parameters"),
            ("scope", "scope"), ("board", "board"), ("vehicle", "vehicle"))
     LAMP = {"ready": B.MUTE, "run": B.GREEN, "stopping": B.YELLOW,
             "tuning": B.ORANGE, "fault": B.RED}
@@ -2557,8 +2825,8 @@ class App(tk.Tk):
         self._build_rail()
         self.pages = {cls.key: cls(self) for cls in
                       (DrivePage, BenchPage, CurrentPage, MotorPage,
-                       SyncPage, DisplayPage, TunePage, ParamPage, ScopePage,
-                       BoardPage, VehiclePage)}
+                       SyncPage, DisplayPage, TunePage, PidPage, ParamPage,
+                       ScopePage, BoardPage, VehiclePage)}
         self.current = None
         self.show("drive")
 
@@ -2604,10 +2872,10 @@ class App(tk.Tk):
         self.nav = {}
         for i, (key, label) in enumerate(self.NAV):
             self.nav[key] = B.RoundButton(
-                cv, 46, 138 + i * 42, 32, B.DARK3, lambda k=key: self.show(k),
-                glyph=str(i + 1), glyph_size=12, label=label, label_side="e",
+                cv, 44, 134 + i * 38, 30, B.DARK3, lambda k=key: self.show(k),
+                glyph=str(i + 1), glyph_size=11, label=label, label_side="e",
                 label_size=13, label_color=B.MUTE)
-        cv.create_image(RAIL / 2, 626, image=B.grille(13, 5, 12, 5))
+        cv.create_image(RAIL / 2, 630, image=B.grille(13, 4, 12, 5))
         cv.create_line(30, 668, RAIL - 30, 668, fill=B.DARK3)
         self.lamp = B.Lamp(cv, 37, 696, "ready", d=11, text_color=B.WHITE,
                            off=B.DARK3)
