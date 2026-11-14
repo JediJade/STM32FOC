@@ -13,7 +13,8 @@ register headers only.
 
 New here? [QUICKSTART.th.md](QUICKSTART.th.md) is twenty minutes from
 nothing to a motor turning on the screen, in Thai, and needs no board to be
-worth reading.
+worth reading. [USAGE.th.md](USAGE.th.md) is what each page of the two
+windows is for, and the order of operations that is easy to get wrong.
 
 The motor can also be a second chip: [STM32FOC-HIL](https://github.com/JediJade/STM32FOC-HIL)
 is a hardware-in-the-loop bench built from another Blue Pill, running this
