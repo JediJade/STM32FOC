@@ -11,7 +11,7 @@ Text and axis-aligned hairlines are left to Tk, which does those well.
 import math
 import tkinter as tk
 
-from PIL import Image, ImageDraw, ImageFilter, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 PAPER = "#E9E6DE"
 PANEL = "#F6F4EF"
@@ -504,3 +504,248 @@ class Dial:
         dot = 3 * s
         dr.ellipse([c - dot, c - dot, c + dot, c + dot], fill=rgb(ORANGE) + (255,))
         self.layer.paste(im.reduce(s))
+
+
+# ------------------------------------------------------------------ axes ---
+
+def axis(lo, hi, min_span=0.0, target=4):
+    """A tidy axis around a data range: rounded ends and the step between
+    them, so that the gridlines land on numbers a person would choose."""
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo < min_span:
+        mid = 0.5 * (hi + lo)
+        lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
+    if hi - lo <= 0.0:
+        lo, hi = lo - 0.5, hi + 0.5
+    step = nice_step(hi - lo, target)
+    return math.floor(lo / step) * step, math.ceil(hi / step) * step, step
+
+
+def decimals(step):
+    """How many figures after the point a tick of this size needs."""
+    if step <= 0:
+        return 0
+    return max(0, min(3, -int(math.floor(math.log10(step) + 1e-9))))
+
+
+class Chart:
+    """A plotting panel with axes that are actually labelled.
+
+    Screen draws a trace in a box and leaves the reader to guess what the
+    box means. This draws the same trace between a scale down the left and
+    a time scale underneath, puts the gridlines on round numbers, marks
+    zero, and prints each trace's present value at the right-hand end where
+    the eye already is. Everything curved is rendered through Pillow at
+    twice the size; the scales are Tk text, which is sharper.
+    """
+
+    SS = 2
+    PAD_L, PAD_R, PAD_T, PAD_B = 56, 58, 12, 22
+    TICKS = 7
+
+    def __init__(self, cv, x, y, w, h, unit="", fill=True, radius=10,
+                 bg=DARK, pad_right=None):
+        self.cv = cv
+        self.x, self.y, self.w, self.h = x, y, w, h
+        self.bg = bg
+        self.fill = fill
+        if pad_right is not None:
+            self.PAD_R = pad_right
+        # Everything this chart draws carries one tag, so that a page
+        # that is leaving can take the whole thing off the canvas.
+        self.tag = "chart%d" % id(self)
+        t = (self.tag,)
+        cv.create_image(x, y, anchor="nw", image=rrect(w, h, radius, bg),
+                        tags=t)
+        self.px, self.py = x + self.PAD_L, y + self.PAD_T
+        self.pw = w - self.PAD_L - self.PAD_R
+        self.ph = h - self.PAD_T - self.PAD_B
+        self.photo = ImageTk.PhotoImage(
+            Image.new("RGB", (self.pw, self.ph), rgb(bg)))
+        cv.create_image(self.px, self.py, anchor="nw", image=self.photo,
+                        tags=t)
+
+        self.y_items = [cv.create_text(self.px - 9, self.py, anchor="e",
+                                       fill=MUTE, font=font(10, num=True),
+                                       text="", tags=t)
+                        for _ in range(self.TICKS + 2)]
+        self.x_items = [cv.create_text(self.px, self.py + self.ph + 5,
+                                       anchor="n", fill=MUTE,
+                                       font=font(10, num=True), text="",
+                                       tags=t)
+                        for _ in range(self.TICKS + 2)]
+        self.r_items = [cv.create_text(self.px + self.pw + 7, self.py,
+                                       anchor="w", fill=MUTE,
+                                       font=font(12, num=True), text="", tags=t)
+                        for _ in range(4)]
+        self.t_unit = cv.create_text(self.px + self.pw - 6, self.py + 3,
+                                     anchor="ne", fill=INK3, font=font(10),
+                                     text=unit, tags=t)
+        self.t_x = cv.create_text(self.px + 6, self.py + 3, anchor="nw",
+                                  fill=INK3, font=font(10), text="", tags=t)
+        self.t_note = cv.create_text(self.px + self.pw / 2,
+                                     self.py + self.ph / 2, text="",
+                                     fill=MUTE, font=font(12), tags=t)
+
+    def unit(self, text):
+        self.cv.itemconfigure(self.t_unit, text=text)
+
+    def note(self, text):
+        """A sentence in the middle of an empty chart, instead of a blank."""
+        self.cv.itemconfigure(self.t_note, text=text)
+
+    def clear(self):
+        im = Image.new("RGB", (self.pw, self.ph), rgb(self.bg))
+        self.photo.paste(im)
+        for item in self.y_items + self.x_items + self.r_items:
+            self.cv.itemconfigure(item, text="")
+
+    def draw(self, series, lo, hi, step=None, seconds=None, xlabel="",
+             dec=None, readout=None):
+        """series: (values, colour, width, fill_under). Oldest sample left.
+
+        lo/hi/step come from axis(); seconds, if given, labels the time
+        scale so that the right-hand edge is now.
+        """
+        s = self.SS
+        W, H = self.pw * s, self.ph * s
+        im = Image.new("RGB", (W, H), rgb(self.bg))
+        dr = ImageDraw.Draw(im)
+        if step is None:
+            step = nice_step(hi - lo)
+        if dec is None:
+            dec = decimals(step)
+        span = (hi - lo) or 1.0
+        k = (H - s) / span
+
+        def ypx(v):
+            return (hi - v) * k
+
+        grid, zero = rgb(GRID), rgb(DARK3)
+        ticks = []
+        v = lo
+        guard = 0
+        while v <= hi + step * 1e-6 and guard < 64:
+            ticks.append(v)
+            v += step
+            guard += 1
+        for v in ticks:
+            yy = ypx(v)
+            dr.line([(0, yy), (W, yy)], fill=grid, width=1)
+        if lo < 0.0 < hi:
+            yy = ypx(0.0)
+            dr.line([(0, yy), (W, yy)], fill=zero, width=2)
+
+        xticks = []
+        if seconds:
+            tstep = nice_step(seconds, 5)
+            t = 0.0
+            while t <= seconds + 1e-9 and len(xticks) < 20:
+                xticks.append(t)
+                t += tstep
+            for t in xticks:
+                xx = W * (1.0 - t / seconds)
+                if 0 < xx < W - 1:
+                    dr.line([(xx, 0), (xx, H)], fill=grid, width=1)
+        else:
+            for i in range(1, 10):
+                xx = W * i // 10
+                dr.line([(xx, 0), (xx, H)], fill=grid, width=1)
+
+        lasts = []
+        for entry in series:
+            values, color, width = entry[0], entry[1], entry[2]
+            under = entry[3] if len(entry) > 3 else False
+            n = len(values)
+            if n < 2:
+                lasts.append(None)
+                continue
+            sx = (W - 1) / (n - 1)
+            pts = [(i * sx, ypx(v)) for i, v in enumerate(values)]
+            if under and self.fill:
+                base = ypx(0.0) if lo < 0.0 < hi else H
+                mask = Image.new("L", (W, H), 0)
+                ImageDraw.Draw(mask).polygon(
+                    pts + [(pts[-1][0], base), (pts[0][0], base)], fill=255)
+                # The wash is there to say which way is down, not to be
+                # looked at: it is strongest against the trace itself and
+                # has faded to nothing by the time it reaches the baseline.
+                top = min(q[1] for q in pts)
+                reach = max(1.0, abs(base - top))
+                ramp = Image.new("L", (1, H))
+                for yy in range(H):
+                    ramp.putpixel(
+                        (0, yy), int(max(0.0, 54.0 * (1.0 - abs(yy - top) / reach))))
+                tint = ImageChops.multiply(mask, ramp.resize((W, H)))
+                im.paste(Image.new("RGB", (W, H), rgb(color)), (0, 0), tint)
+            dr.line(pts, fill=rgb(color), width=max(1, int(width * s)),
+                    joint="curve")
+            r = 2.6 * s
+            dr.ellipse([pts[-1][0] - r, pts[-1][1] - r,
+                        pts[-1][0] + r, pts[-1][1] + r], fill=rgb(color))
+            lasts.append((values[-1], color, pts[-1][1] / s))
+
+        self.photo.paste(im.reduce(s))
+
+        cv = self.cv
+        for i, item in enumerate(self.y_items):
+            if i < len(ticks):
+                cv.coords(item, self.px - 9, self.py + ypx(ticks[i]) / s)
+                cv.itemconfigure(item, text=num(ticks[i], dec))
+            else:
+                cv.itemconfigure(item, text="")
+        for i, item in enumerate(self.x_items):
+            if i < len(xticks):
+                t = xticks[i]
+                cv.coords(item, self.px + self.pw * (1.0 - t / seconds),
+                          self.py + self.ph + 5)
+                cv.itemconfigure(item, text="now" if t == 0 else num(-t, 0))
+            else:
+                cv.itemconfigure(item, text="")
+        cv.itemconfigure(self.t_x, text=xlabel or ("seconds" if seconds else ""))
+
+        shown = [v for v in lasts if v is not None][:len(self.r_items)]
+        if readout is not None:
+            shown = shown[:0] if readout is False else shown
+        taken = []
+        for i, item in enumerate(self.r_items):
+            if i < len(shown):
+                value, color, yy = shown[i]
+                yy = max(6.0, min(self.ph - 6.0, yy))
+                while any(abs(yy - t) < 14 for t in taken):
+                    yy += 14
+                taken.append(yy)
+                cv.coords(item, self.px + self.pw + 7, self.py + yy)
+                cv.itemconfigure(item, text=num(value, dec), fill=color)
+            else:
+                cv.itemconfigure(item, text="")
+
+    def xy(self, xs, ys, radius, color, rings=2, label=""):
+        """A Lissajous view: the same pair of signals plotted against each
+        other. A balanced three-phase set draws a circle, and anything that
+        is not a circle says which phase is wrong."""
+        s = self.SS
+        W, H = self.pw * s, self.ph * s
+        im = Image.new("RGB", (W, H), rgb(self.bg))
+        dr = ImageDraw.Draw(im)
+        cx, cy = W / 2, H / 2
+        r = min(W, H) / 2 - 6 * s
+        grid = rgb(GRID)
+        dr.line([(cx - r, cy), (cx + r, cy)], fill=grid, width=1)
+        dr.line([(cx, cy - r), (cx, cy + r)], fill=grid, width=1)
+        for i in range(1, rings + 1):
+            q = r * i / rings
+            dr.ellipse([cx - q, cy - q, cx + q, cy + q],
+                       outline=rgb(DARK3 if i == rings else GRID), width=s)
+        if len(xs) > 1 and radius > 0:
+            kk = r / radius
+            pts = [(cx + a * kk, cy - b * kk) for a, b in zip(xs, ys)]
+            dr.line(pts, fill=rgb(color), width=3, joint="curve")
+            d = 3.0 * s
+            dr.ellipse([pts[-1][0] - d, pts[-1][1] - d,
+                        pts[-1][0] + d, pts[-1][1] + d], fill=rgb(WHITE))
+        self.photo.paste(im.reduce(s))
+        for item in self.y_items + self.x_items + self.r_items:
+            self.cv.itemconfigure(item, text="")
+        self.cv.itemconfigure(self.t_x, text=label)

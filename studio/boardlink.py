@@ -330,6 +330,7 @@ class BoardLink:
         self.cap_state = None               # recorder state from `x`
         self.cap_data = []                  # the last record read out
         self.cap_div = 1
+        self.cap_chan = None            # which channel it holds
         self.cap_serial = 0                 # bumps when a dump has arrived
         self.x_every = 5                    # one `x` per this many `s`
         self.veh = {}                       # the last `v` line, console 3
@@ -599,6 +600,7 @@ class BoardLink:
         m = DUMP.match(line)
         if m:
             self._dump = []
+            self.cap_chan = m.group(1)
             self.cap_div = int(m.group(2))
 
         self._say(line)

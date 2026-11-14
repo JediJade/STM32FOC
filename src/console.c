@@ -186,7 +186,8 @@ static void print_help(void)
   line("  id <n>     d-axis current target (Q15), used in current mode");
   line("  vd <n>     voltage mode: v_d = n, v_q = 0, no controller");
   line("  cap <ch> <div>  arm the recorder: id iq vd vq spd ang");
-  line("             also ol (one-line pin), hall, aerr, idfw");
+  line("             also ol (one-line pin), hall, aerr, idfw, iab");
+  line("  trig       start an armed recorder now");
   line("  dump       print what the recorder holds");
   line("  v          throttle, brake, sensor, weakening");
   line("  th <n>     throttle reading in place of the pin, 0..4095");
@@ -469,7 +470,8 @@ static void cmd_set(const char *args)
 /* -------------------------------------------------------- recorder ------ */
 
 static const char *const cap_names[CAPTURE_CHANNELS] = {
-  "id", "iq", "vd", "vq", "spd", "ang", "ol", "hall", "aerr", "idfw"
+  "id", "iq", "vd", "vq", "spd", "ang", "ol", "hall", "aerr", "idfw",
+  "iab"
 };
 
 static void cmd_cap(const char *args)
@@ -485,11 +487,16 @@ static void cmd_cap(const char *args)
       if (div < 1)    { div = 1; }
       if (div > 2000) { div = 2000; }
       capture_arm((capture_channel)i, (uint16_t)div);
+      /* `cap iab` is for watching, not for catching a step: no new
+         target is coming to start it, so it starts itself. */
+      if ((capture_channel)i == CAPTURE_IAB) {
+        capture_trigger();
+      }
       line("cap armed");
       return;
     }
   }
-  line("? cap <id|iq|vd|vq|spd|ang|ol|hall|aerr|idfw> <divider>");
+  line("? cap <id|iq|vd|vq|spd|ang|ol|hall|aerr|idfw|iab> <divider>");
 }
 
 static void cmd_dump(void)
@@ -814,6 +821,9 @@ static void dispatch(void)
     line("voltage mode");
   } else if ((arg = after_word(cmd, "cap")) != 0) {
     cmd_cap(arg);
+  } else if (after_word(cmd, "trig") != 0) {
+    capture_trigger();
+    line("trig");
   } else if (after_word(cmd, "dump") != 0) {
     cmd_dump();
   } else if ((arg = after_word(cmd, "th")) != 0) {

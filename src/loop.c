@@ -67,6 +67,8 @@ static loop_mode mode;
 static uint32_t plant_cycles;
 static foc_dq   last_dq;
 static foc_dq   last_vdq;
+static int16_t  last_ia;
+static int16_t  last_ib;
 
 void foc_loop_init(void)
 {
@@ -224,6 +226,12 @@ foc_dq foc_loop_last_dq(void)
   return last_dq;
 }
 
+void foc_loop_last_phase(int16_t *ia, int16_t *ib)
+{
+  *ia = last_ia;
+  *ib = last_ib;
+}
+
 foc_dq foc_loop_last_vdq(void)
 {
   return last_vdq;
@@ -340,5 +348,7 @@ foc_dq foc_loop_step(void)
   }
 
   last_dq = i_dq;
+  last_ia = ia;
+  last_ib = ib;
   return i_dq;
 }

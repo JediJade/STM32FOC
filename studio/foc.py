@@ -301,7 +301,7 @@ class DrivePage(Page):
 
         self.text(X0, 608, "speed, last 10 s", 12, B.INK3)
         self.legend(X0 + 130, 608, ((B.WHITE, "actual"), (B.MUTE, "reference")))
-        self.strip = B.Screen(cv, X0, 630, X1 - X0, 142)
+        self.strip = B.Chart(cv, X0, 630, X1 - X0, 146, unit="rpm")
         cv.bind("<MouseWheel>", self._wheel)
 
     def _set_load(self, v):
@@ -341,10 +341,10 @@ class DrivePage(Page):
         rpm = src.window("rpm", 10.0, 480)
         ref = src.window("ref", 10.0, 480)
         if len(rpm) > 1 and len(ref) == len(rpm):
-            lo, hi = B.nice_range(min(min(rpm), min(ref)),
+            lo, hi, step = B.axis(min(min(rpm), min(ref)),
                                   max(max(rpm), max(ref)), 200.0)
-            self.strip.plot(((ref, B.MUTE, 1), (rpm, B.WHITE, 1.5)), lo, hi)
-            self.strip.labels(B.num(hi), B.num(lo), "10 s")
+            self.strip.draw(((ref, B.MUTE, 1), (rpm, B.WHITE, 1.6)),
+                            lo, hi, step, seconds=10.0)
 
 
 class DisplayPage(Page):
@@ -769,7 +769,7 @@ class TunePage(Page):
 
         self.text(xa, 490, self.step_text, 12, B.INK3)
         self.legend(xa + 150, 490, ((B.MUTE, "before"), (B.ORANGE, "after")))
-        self.screen = B.Screen(cv, xa, 512, xb - xa, 190)
+        self.screen = B.Chart(cv, xa, 512, xb - xa, 194, unit="counts")
         self.t_mb = self.text(xa, 716, "", 13, B.INK3)
         self.t_ma = self.text(xa, 738, "", 13, B.INK)
         self._plotted = None
@@ -860,8 +860,9 @@ class TunePage(Page):
             grid = B.nice_step(top, 4)
             hi = math.ceil(top / grid) * grid
             series.insert(0, ([step] * 2, B.DARK3, 1))
-            self.screen.plot(series, -hi / 8.0, hi, xdiv=6, ydiv=4)
-            self.screen.labels(B.num(hi), B.num(-hi / 8.0), f"{window} ms")
+            lo, top, step = B.axis(-hi / 8.0, hi, 200.0)
+            self.screen.draw(series, lo, top, step, seconds=float(window),
+                             xlabel="milliseconds")
         self.set(self.t_mb, self._metrics("before", res.get("metrics_before"), window))
         self.set(self.t_ma, self._metrics("after", res.get("metrics_after"), window))
 
@@ -1211,11 +1212,18 @@ class ScopePage(Page):
     key = "scope"
     title = "scope"
     SPANS = (0.2, 1.0, 5.0, 20.0)
-    PHASE_SECONDS = 0.05
+    PHASE_MS = 50.0                  # the simulator's own phase-current window
+    CAP_EVERY = 0.4                  # seconds between records asked of the board
+    CAP_PAIRS = 128                  # what one iab record holds
 
     def setup(self):
         self.span = 2
         self.hold = False
+        self.cap_seen = -1
+        self.cap_sent = 0.0
+        self.cap_div = 1
+        self.cap_fails = 0
+        self.phase = None            # (ia, ib, milliseconds) read off the board
 
     def sub(self):
         return self.app.src.scope_note
@@ -1233,33 +1241,69 @@ class ScopePage(Page):
                 lambda i=i: setattr(self, "span", i), label=f"{s:g} s",
                 label_size=10, label_color=B.INK3))
 
-        self.text(X0, 114, "speed  rpm", 12, B.INK3)
-        self.legend(X0 + 110, 114, ((B.WHITE, "actual"), (B.MUTE, "reference")))
-        self.s_speed = B.Screen(cv, X0, 134, X1 - X0, 166)
+        self.text(X0, 112, "speed", 12, B.INK3)
+        self.legend(X0 + 60, 112, ((B.WHITE, "actual"), (B.MUTE, "reference")))
+        self.c_speed = B.Chart(cv, X0, 132, X1 - X0, 178, unit="rpm")
 
-        self.text(X0, 316, f"current  {src.cur_unit}", 12, B.INK3)
-        self.legend(X0 + 130, 316, ((B.ORANGE, "torque current"),
-                                    (B.MUTE, "its reference"),
-                                    (B.YELLOW, "field current")))
-        self.s_cur = B.Screen(cv, X0, 336, X1 - X0, 166)
+        self.text(X0, 326, "current", 12, B.INK3)
+        self.legend(X0 + 70, 326, ((B.ORANGE, "torque, i q"),
+                                   (B.MUTE, "its reference"),
+                                   (B.YELLOW, "field, i d")))
+        self.c_cur = B.Chart(cv, X0, 346, X1 - X0, 178, unit=src.cur_unit)
 
-        self.text(X0, 518, "phase currents  A, last 50 ms", 12, B.INK3)
-        self.legend(X0 + 230, 518, ((B.WHITE, "a"), (B.ORANGE, "b"),
+        self.text(X0, 540, "phase currents", 12, B.INK3)
+        self.legend(X0 + 110, 540, ((B.WHITE, "a"), (B.ORANGE, "b"),
                                     (B.GREEN, "c")))
-        self.s_abc = B.Screen(cv, X0, 538, 664, 224)
-        self.text(736, 518, "current vector", 12, B.INK3)
-        self.s_xy = B.Screen(cv, 736, 538, X1 - 736, 224)
-        if src.kind == "board":
-            # The console reports d and q once per request. The phase
-            # currents exist only inside the 20 kHz loop and are not sent.
-            for screen in (self.s_abc, self.s_xy):
-                cv.create_text(screen.ix + screen.iw / 2,
-                               screen.iy + screen.ih / 2,
-                               text="not reported by the firmware",
-                               fill=B.MUTE, font=B.font(12))
+        self.c_abc = B.Chart(cv, X0, 560, 664, 204, unit=src.cur_unit,
+                             fill=False)
+        self.text(736, 540, "current vector", 12, B.INK3)
+        self.t_xy = self.text(848, 540, "", 12, B.INK3)
+        self.c_xy = B.Chart(cv, 736, 560, X1 - 736, 204, pad_right=56)
 
     def _toggle_hold(self):
         self.hold = not self.hold
+
+    # ---- the board's own recorder -----------------------------------------
+
+    def _ask_record(self, link, rpm_elec_hz):
+        """One record of both phase currents, thinned so that a couple of
+        electrical cycles fill the window however fast the motor is going."""
+        now = time.perf_counter()
+        if link.cap_serial != self.cap_seen:
+            self.cap_seen = link.cap_serial
+            if getattr(link, "cap_chan", None) == "iab":
+                d = link.cap_data
+                ms = self.CAP_PAIRS * link.cap_div / 20.0
+                self.phase = (d[0::2], d[1::2], ms)
+                self.cap_fails = 0
+                self.cap_sent = 0.0
+        if now - self.cap_sent < self.CAP_EVERY:
+            return
+        if self.cap_sent and self.phase is None:
+            # Asked, and nothing came back: an older firmware without the
+            # channel answers the question with a refusal, not a record.
+            self.cap_fails += 1
+        want_ms = (2000.0 / rpm_elec_hz) if rpm_elec_hz > 1.0 else 12.8
+        div = int(round(want_ms * 20.0 / self.CAP_PAIRS))
+        self.cap_div = max(1, min(40, div))
+        link.send(f"cap iab {self.cap_div}")
+        link.send("dump")
+        self.cap_sent = now
+
+    def _phase_from_board(self):
+        src = self.app.src
+        link = src.link
+        tune = self.app.active_tune()
+        if getattr(tune, "active", False):
+            return None                      # the recorder is tuning, not ours
+        st = link.state or {}
+        hz = abs(st.get("spd", 0)) * 1000.0 / 65536.0
+        self._ask_record(link, hz)
+        if self.phase is None and self.cap_fails >= 3:
+            return False                     # firmware without the channel
+        return self.phase
+
+    # ---- drawing -----------------------------------------------------------
 
     def update(self):
         src = self.app.src
@@ -1269,7 +1313,6 @@ class ScopePage(Page):
         if self.hold:
             return
         span = self.SPANS[self.span]
-        right = f"{span:g} s"
 
         rpm = src.window("rpm", span, 960)
         ref = src.window("ref", span, 960)
@@ -1282,30 +1325,55 @@ class ScopePage(Page):
         # a sample may arrive between two of the reads above
         rpm, ref, iq, iqref, idd = (v[-n:] for v in (rpm, ref, iq, iqref, idd))
 
-        lo, hi = B.nice_range(min(min(rpm), min(ref)), max(max(rpm), max(ref)),
-                              100.0)
-        self.s_speed.plot(((ref, B.MUTE, 1), (rpm, B.WHITE, 1.5)), lo, hi)
-        self.s_speed.labels(B.num(hi), B.num(lo), right)
+        lo, hi, step = B.axis(min(min(rpm), min(ref)),
+                              max(max(rpm), max(ref)), 100.0)
+        self.c_speed.draw(((ref, B.MUTE, 1), (rpm, B.WHITE, 1.6)),
+                          lo, hi, step, seconds=span)
 
-        lo, hi = B.nice_range(min(min(iq), min(idd), min(iqref)),
+        lo, hi, step = B.axis(min(min(iq), min(idd), min(iqref)),
                               max(max(iq), max(idd), max(iqref)), src.cur_span)
-        self.s_cur.plot(((iqref, B.MUTE, 1), (idd, B.YELLOW, 1),
-                         (iq, B.ORANGE, 1.5)), lo, hi)
-        self.s_cur.labels(B.num(hi, src.cur_dec), B.num(lo, src.cur_dec), right)
+        self.c_cur.draw(((iqref, B.MUTE, 1), (idd, B.YELLOW, 1.2),
+                         (iq, B.ORANGE, 1.6, True)), lo, hi, step,
+                        seconds=span, dec=src.cur_dec)
 
         if src.kind == "board":
+            got = self._phase_from_board()
+            if got is False:
+                self.c_abc.note("this firmware does not record the phase "
+                                "currents")
+                self.c_xy.note("needs console 4 with the iab channel")
+                return
+            if not got:
+                self.c_abc.note("reading the recorder…")
+                self.c_xy.note("")
+                return
+            ia, ib, ms = got
+        else:
+            ia = src.window("ia", self.PHASE_MS / 1000.0, 400)
+            ib = src.window("ib", self.PHASE_MS / 1000.0, 400)
+            ms = self.PHASE_MS
+        if len(ia) < 2 or len(ib) < 2:
             return
-        ia = src.window("ia", self.PHASE_SECONDS, 400)
-        ib = src.window("ib", self.PHASE_SECONDS, 400)
+        n = min(len(ia), len(ib))
+        ia, ib = ia[-n:], ib[-n:]
+        self.c_abc.note("")
+        self.c_xy.note("")
+
         ic = [-a - b for a, b in zip(ia, ib)]
-        peak = max(max(abs(v) for v in ia), max(abs(v) for v in ib), 0.2)
-        r = B.nice_step(peak * 1.15, 1)
-        self.s_abc.plot(((ic, B.GREEN, 1.5), (ib, B.ORANGE, 1.5),
-                         (ia, B.WHITE, 1.5)), -r, r, xdiv=10, ydiv=4)
-        self.s_abc.labels(B.num(r, 1), B.num(-r, 1), "50 ms")
+        peak = max(max(abs(v) for v in ia), max(abs(v) for v in ib),
+                   src.cur_span * 0.05)
+        lo, hi, step = B.axis(-peak * 1.15, peak * 1.15, src.cur_span * 0.1)
+        self.c_abc.draw(((ic, B.GREEN, 1.4), (ib, B.ORANGE, 1.4),
+                         (ia, B.WHITE, 1.4)), lo, hi, step, seconds=ms,
+                        xlabel="milliseconds", dec=src.cur_dec)
+
         beta = [(a + 2.0 * b) * 0.5773502691896258 for a, b in zip(ia, ib)]
-        self.s_xy.xy(ia, beta, r, B.ORANGE)
-        self.s_xy.labels(B.num(r, 1) + " A", "", "α β")
+        self.c_xy.xy(ia, beta, hi, B.ORANGE,
+                     label=f"α β   full scale {B.num(hi, src.cur_dec)}"
+                           f" {src.cur_unit}")
+        self.set(self.t_xy,
+                 f"{ms:.1f} ms of it, at {20.0 / max(1, self.cap_div):.0f} kHz"
+                 if src.kind == "board" else "")
 
 
 class BoardPage(Page):

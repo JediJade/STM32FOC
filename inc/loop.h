@@ -135,6 +135,15 @@ foc_dq   foc_loop_last_dq(void);
 
 /* The last (v_d, v_q) the loop applied: the controllers' output plus the
    feed-forward, after limiting. Zero in idle and during alignment. */
+/*
+ * The two phase currents the last period measured, Q15.
+ *
+ * Everything else the host can read has already been through Clarke
+ * and Park. These are what went in, and they are what a current probe
+ * on the motor leads would have shown.
+ */
+void     foc_loop_last_phase(int16_t *ia, int16_t *ib);
+
 foc_dq   foc_loop_last_vdq(void);
 loop_mode foc_loop_mode(void);
 

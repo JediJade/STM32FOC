@@ -106,12 +106,28 @@ void capture_tick(void)
   case CAPTURE_HALL:  v = (int16_t)sensor_hall_now();    break;
   case CAPTURE_AERR:  v = sensor_angle_error();          break;
   case CAPTURE_IDFW:  v = drive_fw_d();                  break;
+  case CAPTURE_IAB: {
+    /* Two samples out of one period. The pair is the point: plotted
+       against each other they are the current vector, and that only
+       means anything if both were measured at the same instant. */
+    int16_t ia;
+    int16_t ib;
+
+    foc_loop_last_phase(&ia, &ib);
+    buf[count] = ia;
+    count++;
+    v = ib;
+    break;
+  }
   default:            v = 0;                             break;
   }
 
   buf[count] = v;
   count++;
-  if (count >= CAPTURE_LEN) {
+  /* The pair channel has just written two, so it has to stop one
+     short: a record must not end on half a pair. */
+  if (count >= (uint16_t)(CAPTURE_LEN -
+                          ((channel == CAPTURE_IAB) ? 1u : 0u))) {
     state = CAPTURE_DONE;
   }
 }

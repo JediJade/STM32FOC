@@ -7,7 +7,8 @@
  * constant gets measured - has to be recorded here, at the loop's own rate,
  * and read out afterwards.
  *
- * One channel, 256 samples, optionally thinned: every period is 12.8 ms of
+ * One channel, 256 samples, optionally thinned - except iab, which is
+ * 128 pairs, each pair measured in one interrupt: every period is 12.8 ms of
  * signal at 20 kHz, every 20th is a quarter of a second at 1 kHz.
  *
  * Arming does not start it. It starts on capture_trigger(), which the console
@@ -32,6 +33,7 @@ typedef enum {
   CAPTURE_HALL,         /* Hall state, 0..7                        */
   CAPTURE_AERR,         /* angle used minus the model's true angle */
   CAPTURE_IDFW,         /* field-weakening current                 */
+  CAPTURE_IAB,          /* both phase currents, a b a b            */
   CAPTURE_CHANNELS
 } capture_channel;
 
