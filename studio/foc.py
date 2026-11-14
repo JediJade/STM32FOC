@@ -1221,8 +1221,10 @@ class ScopePage(Page):
         self.hold = False
         self.cap_seen = -1
         self.cap_sent = 0.0
+        self.cap_due = 0.0           # when the armed record will be full
         self.cap_div = 1
         self.cap_fails = 0
+        self.cap_wait = False        # armed, not yet asked for
         self.phase = None            # (ia, ib, milliseconds) read off the board
 
     def sub(self):
@@ -1267,16 +1269,30 @@ class ScopePage(Page):
 
     def _ask_record(self, link, rpm_elec_hz):
         """One record of both phase currents, thinned so that a couple of
-        electrical cycles fill the window however fast the motor is going."""
+        electrical cycles fill the window however fast the motor is going.
+
+        Arming and reading out are two steps with a wait between them: the
+        record is not full until 128 periods of its divider have gone by,
+        and a dump sent before then returns the handful of samples written
+        so far.
+        """
         now = time.perf_counter()
         if link.cap_serial != self.cap_seen:
             self.cap_seen = link.cap_serial
+            self.cap_wait = False
             if getattr(link, "cap_chan", None) == "iab":
                 d = link.cap_data
-                ms = self.CAP_PAIRS * link.cap_div / 20.0
-                self.phase = (d[0::2], d[1::2], ms)
-                self.cap_fails = 0
-                self.cap_sent = 0.0
+                if len(d) >= 16:
+                    ms = self.CAP_PAIRS * link.cap_div / 20.0
+                    self.phase = (d[0::2], d[1::2], ms)
+                    self.cap_fails = 0
+
+        if self.cap_wait:
+            if now >= self.cap_due:
+                link.send("dump")
+                self.cap_wait = False
+                self.cap_sent = now
+            return
         if now - self.cap_sent < self.CAP_EVERY:
             return
         if self.cap_sent and self.phase is None:
@@ -1287,8 +1303,9 @@ class ScopePage(Page):
         div = int(round(want_ms * 20.0 / self.CAP_PAIRS))
         self.cap_div = max(1, min(40, div))
         link.send(f"cap iab {self.cap_div}")
-        link.send("dump")
         self.cap_sent = now
+        self.cap_due = now + self.CAP_PAIRS * self.cap_div / 20000.0 + 0.03
+        self.cap_wait = True
 
     def _phase_from_board(self):
         src = self.app.src
@@ -1362,7 +1379,10 @@ class ScopePage(Page):
         ic = [-a - b for a, b in zip(ia, ib)]
         peak = max(max(abs(v) for v in ia), max(abs(v) for v in ib),
                    src.cur_span * 0.05)
-        lo, hi, step = B.axis(-peak * 1.15, peak * 1.15, src.cur_span * 0.1)
+        # a finer target here: a current that peaks at 1900 counts on an
+        # axis that stops at 4000 is drawn half size for no reason
+        lo, hi, step = B.axis(-peak * 1.15, peak * 1.15,
+                              src.cur_span * 0.1, target=6)
         self.c_abc.draw(((ic, B.GREEN, 1.4), (ib, B.ORANGE, 1.4),
                          (ia, B.WHITE, 1.4)), lo, hi, step, seconds=ms,
                         xlabel="milliseconds", dec=src.cur_dec)
