@@ -27,7 +27,7 @@
  * `save` writes the parameters by number, so the number is also what tells
  * a stored record apart from one a different parameter list wrote.
  */
-#define CONSOLE_VERSION   4
+#define CONSOLE_VERSION   5
 
 /* ------------------------------------------------------- formatting ----- */
 
@@ -285,8 +285,8 @@ static void print_tests(void)
  * loop's own limit, and a gain past these ranges is a typing mistake.
  */
 typedef enum {
-  P_CKP = 0, P_CKI, P_CDEC, P_CCROSS, P_CEMF,
-  P_SKP, P_SKI, P_SIMAX, P_PKP,
+  P_CKP = 0, P_CKI, P_CKD, P_CDEC, P_CCROSS, P_CEMF,
+  P_SKP, P_SKI, P_SKD, P_SIMAX, P_PKP,
   P_DRIVE,                              /* drive.h's, in its order, from here */
   P_COUNT = P_DRIVE + DP_COUNT
 } param_id;
@@ -300,11 +300,13 @@ typedef struct {
 static const param_def params[P_COUNT] = {
   { "ckp",     0,  262144 },    /* current Kp, Q15: up to 8.0            */
   { "cki",     0,   32767 },    /* current Ki, Q15 per 50 us period      */
+  { "ckd",     0,   65536 },    /* current Kd, Q15 per count of change   */
   { "cdec",    0,       2 },    /* feed-forward: off, fixed, with speed  */
   { "ccross",  0,   65535 },    /* cross-coupling feed-forward, Q15      */
   { "cemf",    0,  131071 },    /* back-EMF feed-forward, Q15            */
   { "skp",     0, 1048576 },    /* speed Kp, Q15: up to 32.0             */
   { "ski",     0,  131072 },    /* speed Ki, Q15 per 1 ms tick           */
+  { "skd",     0,   65536 },    /* speed Kd, Q15 per unit of change      */
   { "simax", 256,   29491 },    /* current the speed loop may ask for    */
   { "pkp",     0,   32768 },    /* position Kp, Q15                      */
 
@@ -348,11 +350,13 @@ static int32_t param_get(param_id id)
   switch (id) {
   case P_CKP:    foc_loop_get_gains(&a, &b);        return a;
   case P_CKI:    foc_loop_get_gains(&a, &b);        return b;
+  case P_CKD:    return foc_loop_kd();
   case P_CDEC:   return foc_loop_decouple();
   case P_CCROSS: foc_loop_get_feedforward(&a, &b);  return a;
   case P_CEMF:   foc_loop_get_feedforward(&a, &b);  return b;
   case P_SKP:    outer_get_gains(&a, &b, &c);       return a;
   case P_SKI:    outer_get_gains(&a, &b, &c);       return b;
+  case P_SKD:    return outer_kd();
   case P_SIMAX:  outer_get_gains(&a, &b, &c);       return c;
   case P_PKP:    return outer_pos_kp();
   default:       return 0;
@@ -379,11 +383,13 @@ static void param_set(param_id id, int32_t v)
   switch (id) {
   case P_CKP:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(v, b);        break;
   case P_CKI:    foc_loop_get_gains(&a, &b);        foc_loop_set_gains(a, v);        break;
+  case P_CKD:    foc_loop_set_kd(v);                                                 break;
   case P_CDEC:   foc_loop_set_decouple((int)v);                                      break;
   case P_CCROSS: foc_loop_get_feedforward(&a, &b);  foc_loop_set_feedforward(v, b);  break;
   case P_CEMF:   foc_loop_get_feedforward(&a, &b);  foc_loop_set_feedforward(a, v);  break;
   case P_SKP:    outer_get_gains(&a, &b, &c);       outer_set_gains(v, b, c);        break;
   case P_SKI:    outer_get_gains(&a, &b, &c);       outer_set_gains(a, v, c);        break;
+  case P_SKD:    outer_set_kd(v);                                                    break;
   case P_SIMAX:  outer_get_gains(&a, &b, &c);       outer_set_gains(a, b, v);        break;
   case P_PKP:    outer_set_pos_kp(v);                                                break;
   default:                                                                           break;

@@ -33,7 +33,11 @@
 typedef struct {
   int32_t kp;       /* Q15 */
   int32_t ki;       /* Q15, already multiplied by the sample time */
+  int32_t kd;       /* Q15, output per unit of measurement change */
   int32_t integ;    /* Q30 accumulator */
+  int32_t d_prev;   /* the measurement one sample ago */
+  int32_t d_filt;   /* the derivative term, filtered, Q15 of the output */
+  uint8_t primed;   /* d_prev holds a real sample, not a zero */
   int32_t out_max;  /* Q15 output limit, symmetric */
   int32_t wide;     /* nonzero: the gains need the error clipped first */
   int32_t ep_max;   /* beyond this error the proportional term saturates */
@@ -47,7 +51,21 @@ void    pi_init(pi_state *s, int32_t kp, int32_t ki, int32_t out_max);
    Not atomic: call it with the control interrupt held off. */
 void    pi_configure(pi_state *s, int32_t kp, int32_t ki, int32_t out_max);
 
+/*
+ * The derivative gain, in Q15 of output per Q15 of measurement change
+ * per sample. Zero - the default - is the plain PI this started as.
+ *
+ * It acts on the measurement, not on the error: the setpoint here moves
+ * in steps and the derivative of a step is an impulse, which would put
+ * the output on its limit for one period every time a target changed.
+ * For a setpoint that is holding still the two are the same thing.
+ */
+void    pi_set_kd(pi_state *s, int32_t kd);
+int32_t pi_kd(const pi_state *s);
+
 void    pi_reset(pi_state *s);
-int16_t pi_step(pi_state *s, int32_t error);
+
+/* error, and the measurement the error was formed from. */
+int16_t pi_step(pi_state *s, int32_t error, int32_t meas);
 
 #endif /* PI_H */

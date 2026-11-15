@@ -51,6 +51,14 @@ int32_t outer_speed(void);          /* last measured speed */
  */
 void    outer_set_gains(int32_t speed_kp, int32_t speed_ki, int32_t iq_max);
 void    outer_get_gains(int32_t *speed_kp, int32_t *speed_ki, int32_t *iq_max);
+/* The speed loop's derivative gain, on the measured speed. Zero by
+   default. Where it earns its place is the overshoot of a speed step
+   into a load with inertia; where it does not is a speed derived from
+   hall edges, which is already a difference of a quantised angle and
+   has little left to differentiate. */
+void    outer_set_kd(int32_t kd);
+int32_t outer_kd(void);
+
 void    outer_set_pos_kp(int32_t kp);
 int32_t outer_pos_kp(void);
 /* 1: the measured speed is sensor_speed(), not the angle's difference. */

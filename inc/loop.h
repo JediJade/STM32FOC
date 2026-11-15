@@ -61,6 +61,13 @@ void     foc_loop_set_voltage(int16_t vd, int16_t vq);
  * Changing them does not touch the integrators.
  */
 void     foc_loop_set_gains(int32_t kp, int32_t ki);
+
+/* The derivative gain, shared by both axes. Zero by default: a winding
+   is first order and has nothing for a derivative to damp, and the
+   current reading is the noisiest signal in the drive. It is here so
+   that can be measured rather than taken on trust. */
+void     foc_loop_set_kd(int32_t kd);
+int32_t  foc_loop_kd(void);
 void     foc_loop_get_gains(int32_t *kp, int32_t *ki);
 
 /*

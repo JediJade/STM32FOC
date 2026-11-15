@@ -108,6 +108,17 @@ void foc_loop_set_voltage(int16_t vd, int16_t vq)
   v_cmd.q = vq;
 }
 
+void foc_loop_set_kd(int32_t kd)
+{
+  pi_set_kd(&pi_d, kd);
+  pi_set_kd(&pi_q, kd);
+}
+
+int32_t foc_loop_kd(void)
+{
+  return pi_kd(&pi_q);
+}
+
 void foc_loop_set_gains(int32_t kp, int32_t ki)
 {
   gain_kp = kp;
@@ -349,8 +360,10 @@ foc_dq foc_loop_step(void)
     break;
 
   case LOOP_MODE_CURRENT: {
-    int32_t vd = pi_step(&pi_d, (int32_t)target_d + fw_d - (int32_t)i_dq.d);
-    int32_t vq = pi_step(&pi_q, (int32_t)target_q + q_boost - (int32_t)i_dq.q);
+    int32_t vd = pi_step(&pi_d, (int32_t)target_d + fw_d - (int32_t)i_dq.d,
+                         (int32_t)i_dq.d);
+    int32_t vq = pi_step(&pi_q, (int32_t)target_q + q_boost - (int32_t)i_dq.q,
+                         (int32_t)i_dq.q);
     foc_dq  v_dq;
 
     if (decouple != 0) {

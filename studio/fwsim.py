@@ -44,7 +44,7 @@ OUT_MAX = 29491
 SPEED_MAX = 6560
 CAPTURE_LEN = 256
 OUTER_DIVIDER = 20
-CONSOLE_VERSION = 4
+CONSOLE_VERSION = 5
 
 # Where the emulator keeps what the board keeps in its last flash page.
 STORE_PATH = os.path.join(tempfile.gettempdir(), "fwsim-store.json")
@@ -79,11 +79,13 @@ SPEED_REF = 6560                # the speed ccross and cemf are stated at
 PARAMS = (          # name, default, lo, hi - as console.c has them
     ("ckp", 6000, 0, 262144),
     ("cki", 900, 0, 32767),
+    ("ckd", 0, 0, 65536),
     ("cdec", 1, 0, 2),
     ("ccross", 20580, 0, 65535),
     ("cemf", 6554, 0, 131071),
     ("skp", 32768, 0, 1048576),
     ("ski", 6144, 0, 131072),
+    ("skd", 0, 0, 65536),
     ("simax", 16384, 256, 29491),
     ("pkp", 328, 0, 32768),
     ("vlim", 29491, 4096, 29491),
@@ -219,6 +221,8 @@ class FwSim:
         # outer
         self.outer = OUTER_OFF
         self.int_s = 0
+        self.d_s = 0
+        self.spd_prev = 0
         self.speed = 0
         self.speed_ref = 0
         self.iq_ref = 0
@@ -408,7 +412,7 @@ class FwSim:
 
     def run(self, n):
         p = self.p
-        kp_c = p["ckp"]; ki_c = p["cki"]
+        kp_c = p["ckp"]; ki_c = p["cki"]; kd_c = p["ckd"]
         i_d = self.i_d; i_q = self.i_q; omega_fx = self.omega_fx; theta = self.theta
         int_d = self.int_d; int_q = self.int_q
         div = self.div
@@ -1003,7 +1007,14 @@ class FwSim:
             iq_max = p["simax"]
             e = self.speed_ref - self.speed
             self.int_s = _clamp(self.int_s + p["ski"] * e, -(iq_max << 15), iq_max << 15)
-            u = _clamp(((p["skp"] * e) >> 15) + (self.int_s >> 15), -iq_max, iq_max)
+            # The derivative acts on the measurement and is filtered by a
+            # quarter each tick, exactly as pi.c does it.
+            d_raw = ((p["skd"] * (self.spd_prev - self.speed)) >> 15
+                     if p["skd"] else 0)
+            self.d_s += (d_raw - self.d_s) >> 2
+            self.spd_prev = self.speed
+            u = _clamp(((p["skp"] * e) >> 15) + (self.int_s >> 15) + self.d_s,
+                       -iq_max, iq_max)
             self.iq_ref = u
             self.target_q = u
 
@@ -1416,7 +1427,8 @@ def selfcheck():
 
     fw = FwSim(realtime=False)
     check("unknown command", talk(fw, "nonsense") == ["? for help"], "")
-    check("version line", talk(fw, "ver") == ["fw 4 cap 256"], "")
+    check("version line",
+          talk(fw, "ver") == [f"fw {CONSOLE_VERSION} cap {CAPTURE_LEN}"], "")
     check("set clamps to the firmware's range",
           talk(fw, "set cki 99999") == ["p cki 32767"], "")
     fw.write_line("set cki 900")

@@ -137,10 +137,21 @@ void outer_tick(uint16_t measured_angle)
   }
 
   /* Speed loop -> current reference for the loop running at 20 kHz */
-  iq_ref = (int32_t)pi_step(&pi_speed, speed_ref - speed_meas);
+  iq_ref = (int32_t)pi_step(&pi_speed, speed_ref - speed_meas,
+                            speed_meas);
   foc_loop_set_target((int16_t)iq_ref);
 
   cycles = DWT->CYCCNT - c0;
+}
+
+void outer_set_kd(int32_t kd)
+{
+  pi_set_kd(&pi_speed, kd);
+}
+
+int32_t outer_kd(void)
+{
+  return pi_kd(&pi_speed);
 }
 
 void outer_set_gains(int32_t speed_kp, int32_t speed_ki, int32_t iq_max)

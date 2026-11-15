@@ -91,7 +91,7 @@ def main(argv):
     started_with = b.params()
 
     ver = b.talk("ver")
-    b.check("console version 4", ver == ["fw 4 cap 256"], ver)
+    b.check("console version 5", ver == ["fw 5 cap 256"], ver)
 
     # ---- an erased page, and a board that says so
     b.talk("sto clear")

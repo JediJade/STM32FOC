@@ -453,6 +453,12 @@ BOARD_PARAMS = [
     Param("1.01", "ckp", "proportional gain", "Q15", 6000, 0, 262144, 500, 0,
           "Current controller Kp, as the firmware stores it: 32768 is a gain "
           "of 1.0 count of voltage per count of current error."),
+    Param("1.03", "ckd", "derivative gain", "Q15", 0, 0, 65536, 250, 0,
+          "Output per unit of change in the measured current, filtered. "
+          "Zero is right for almost every winding: it is first order and "
+          "has nothing for a derivative to damp, while the current reading "
+          "is the noisiest signal in the drive. It is here to be measured "
+          "rather than argued about."),
     Param("1.02", "cki", "integral gain", "Q15", 900, 0, 32767, 50, 0,
           "Current controller Ki per 50 µs period: 32768 would add the whole "
           "error to the output every period."),
@@ -471,6 +477,11 @@ BOARD_PARAMS = [
     Param("2.01", "skp", "speed proportional gain", "Q15", 32768, 0, 1048576, 2000, 0,
           "Speed controller Kp: 32768 is one count of torque current per "
           "angle unit per ms of speed error."),
+    Param("2.03", "skd", "speed derivative gain", "Q15", 0, 0, 65536, 250, 0,
+          "Output per unit of change in the measured speed, filtered. This "
+          "is the one that can earn its place: it damps the overshoot of a "
+          "speed step into inertia. A speed taken from Hall edges is "
+          "already a difference of a quantised angle, so expect noise."),
     Param("2.02", "ski", "speed integral gain", "Q15", 6144, 0, 131072, 100, 0,
           "Speed controller Ki per 1 ms update."),
     Param("2.03", "simax", "torque current limit", "counts", 16384, 256, 29491, 256, 0,
@@ -2656,9 +2667,9 @@ class PidPage(Page):
     FRAME = 0.020                  # the window's own tick, for the waits
 
     LOOPS = (
-        ("current", "CURRENT LOOP", ("ckp", "cki"), "i d step, 25.6 ms",
+        ("current", "CURRENT LOOP", ("ckp", "cki", "ckd"), "i d step, 25.6 ms",
          "counts"),
-        ("speed", "SPEED LOOP", ("skp", "ski"), "speed step, 512 ms",
+        ("speed", "SPEED LOOP", ("skp", "ski", "skd"), "speed step, 512 ms",
          "units/ms"),
     )
 
@@ -2680,7 +2691,7 @@ class PidPage(Page):
             cv.create_line(xa, y + 18, xb, y + 18, fill=B.LINE)
             for i, name in enumerate(gains):
                 q = BOARD_BY_KEY[name]
-                yy = y + 32 + i * 56
+                yy = y + 26 + i * 46
                 self.text(xa, yy + 10, q.name, 14, B.INK)
                 self.text(xa + 250, yy + 4, "Q15", 11, B.INK3)
                 value = self.text(xa + 240, yy, "–", 24, B.INK, "ne",
@@ -2692,12 +2703,12 @@ class PidPage(Page):
                               lambda n=name: self.nudge(n, 1),
                               glyph="+", glyph_size=17)
                 self.rows[name] = value
-            btn = B.RoundButton(cv, xa + 34, y + 176, 44, B.YELLOW,
+            btn = B.RoundButton(cv, xa + 34, y + 182, 44, B.YELLOW,
                                 lambda k=key: self.measure(k),
                                 label="measure the step", label_side="e",
                                 label_size=12)
             self.buttons[key] = btn
-            y += 230
+            y += 242
 
         self.t_msg = self.text(xa, 586, "", 12, B.ORANGE, width=xb - xa)
 

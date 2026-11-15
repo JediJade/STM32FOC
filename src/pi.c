@@ -6,6 +6,15 @@
 #define PI_NARROW_KP_MAX   32768
 #define PI_NARROW_KI_MAX   16384
 
+/* kd * delta must also stay inside 32 bits: 65536 * 32767 is just under
+   2^31, so either one may reach these as long as the other is clipped. */
+#define PI_KD_MAX          65536
+#define PI_D_DELTA_MAX     32767
+
+/* One pole on the derivative. A quarter of the sample rate: about
+   1.3 kHz in the current loop, 64 Hz in the speed loop. */
+#define PI_D_FILTER_SHIFT  2
+
 void pi_configure(pi_state *s, int32_t kp, int32_t ki, int32_t out_max)
 {
   int32_t imax = out_max << 15;
@@ -53,17 +62,72 @@ void pi_configure(pi_state *s, int32_t kp, int32_t ki, int32_t out_max)
 
 void pi_init(pi_state *s, int32_t kp, int32_t ki, int32_t out_max)
 {
-  s->integ = 0;
+  s->integ  = 0;
+  s->kd     = 0;
+  s->d_prev = 0;
+  s->d_filt = 0;
+  s->primed = 0u;
   pi_configure(s, kp, ki, out_max);
+}
+
+void pi_set_kd(pi_state *s, int32_t kd)
+{
+  if (kd < 0)         { kd = 0; }
+  if (kd > PI_KD_MAX) { kd = PI_KD_MAX; }
+  s->kd = kd;
+  if (kd == 0) {
+    s->d_filt = 0;
+  }
+}
+
+int32_t pi_kd(const pi_state *s)
+{
+  return s->kd;
 }
 
 void pi_reset(pi_state *s)
 {
-  s->integ = 0;
+  s->integ  = 0;
+  s->d_filt = 0;
+  s->primed = 0u;
+}
+
+/*
+ * The derivative term: how fast the measurement is moving, opposed.
+ *
+ * Clipped before the multiply for the same reason the other two terms
+ * are - kd at its limit times a full-scale swing is close enough to
+ * 2^31 that nothing else may be allowed near it - and filtered after,
+ * because the difference of two adjacent samples of a real current is
+ * mostly the converter's own noise.
+ */
+static int32_t pi_derivative(pi_state *s, int32_t meas)
+{
+  int32_t delta;
+  int32_t raw;
+
+  if (s->primed == 0u) {
+    s->d_prev = meas;
+    s->primed = 1u;
+    return 0;
+  }
+  delta = s->d_prev - meas;
+  s->d_prev = meas;
+
+  if (s->kd == 0) {
+    s->d_filt = 0;
+    return 0;
+  }
+  if (delta >  PI_D_DELTA_MAX) { delta =  PI_D_DELTA_MAX; }
+  if (delta < -PI_D_DELTA_MAX) { delta = -PI_D_DELTA_MAX; }
+
+  raw = (s->kd * delta) >> 15;
+  s->d_filt += (raw - s->d_filt) >> PI_D_FILTER_SHIFT;
+  return s->d_filt;
 }
 
 /* The same controller for gains too large for the plain products. */
-static int16_t pi_step_wide(pi_state *s, int32_t error)
+static int16_t pi_step_wide(pi_state *s, int32_t error, int32_t d_term)
 {
   int32_t imax = s->out_max << 15;
   int32_t e;
@@ -95,7 +159,7 @@ static int16_t pi_step_wide(pi_state *s, int32_t error)
   } else if (e < -s->ep_max) {
     e = -s->ep_max;
   }
-  out = ((s->kp * e) >> 15) + (s->integ >> 15);
+  out = ((s->kp * e) >> 15) + (s->integ >> 15) + d_term;
 
   if (out > s->out_max) {
     out = s->out_max;
@@ -106,14 +170,15 @@ static int16_t pi_step_wide(pi_state *s, int32_t error)
   return (int16_t)out;
 }
 
-int16_t pi_step(pi_state *s, int32_t error)
+int16_t pi_step(pi_state *s, int32_t error, int32_t meas)
 {
   int32_t imax;
   int32_t p;
   int32_t out;
+  int32_t d_term = pi_derivative(s, meas);
 
   if (s->wide != 0) {
-    return pi_step_wide(s, error);
+    return pi_step_wide(s, error, d_term);
   }
 
   /* From here down is the controller exactly as it was first written. */
@@ -129,7 +194,7 @@ int16_t pi_step(pi_state *s, int32_t error)
   }
 
   p   = (s->kp * error) >> 15;
-  out = p + (s->integ >> 15);
+  out = p + (s->integ >> 15) + d_term;
 
   if (out > s->out_max) {
     out = s->out_max;
