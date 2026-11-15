@@ -41,6 +41,7 @@ typedef struct {
   int32_t out_max;  /* Q15 output limit, symmetric */
   int32_t wide;     /* nonzero: the gains need the error clipped first */
   int32_t ep_max;   /* beyond this error the proportional term saturates */
+  int32_t ed_max;   /* beyond this change the derivative term saturates  */
   int32_t ei_max;   /* beyond this error the integrator saturates in one step */
 } pi_state;
 

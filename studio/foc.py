@@ -453,7 +453,7 @@ BOARD_PARAMS = [
     Param("1.01", "ckp", "proportional gain", "Q15", 6000, 0, 262144, 500, 0,
           "Current controller Kp, as the firmware stores it: 32768 is a gain "
           "of 1.0 count of voltage per count of current error."),
-    Param("1.03", "ckd", "derivative gain", "Q15", 0, 0, 65536, 250, 0,
+    Param("1.03", "ckd", "derivative gain", "Q15", 0, 0, 262144, 2000, 0,
           "Output per unit of change in the measured current, filtered. "
           "Zero is right for almost every winding: it is first order and "
           "has nothing for a derivative to damp, while the current reading "
@@ -477,7 +477,7 @@ BOARD_PARAMS = [
     Param("2.01", "skp", "speed proportional gain", "Q15", 32768, 0, 1048576, 2000, 0,
           "Speed controller Kp: 32768 is one count of torque current per "
           "angle unit per ms of speed error."),
-    Param("2.03", "skd", "speed derivative gain", "Q15", 0, 0, 65536, 250, 0,
+    Param("2.03", "skd", "speed derivative gain", "Q15", 0, 0, 1048576, 20000, 0,
           "Output per unit of change in the measured speed, filtered. This "
           "is the one that can earn its place: it damps the overshoot of a "
           "speed step into inertia. A speed taken from Hall edges is "

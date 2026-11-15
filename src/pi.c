@@ -6,10 +6,12 @@
 #define PI_NARROW_KP_MAX   32768
 #define PI_NARROW_KI_MAX   16384
 
-/* kd * delta must also stay inside 32 bits: 65536 * 32767 is just under
-   2^31, so either one may reach these as long as the other is clipped. */
-#define PI_KD_MAX          65536
-#define PI_D_DELTA_MAX     32767
+/* The derivative gain gets the same headroom as the proportional one it
+   sits beside: up to 32.0 in Q15. kd * delta would then pass 2^31 for any
+   real change, so the change is clipped first - the same trick the other
+   two terms use, and for the same reason. Past the clip the term is
+   pinned at the output limit anyway. */
+#define PI_KD_MAX          1048576
 
 /* One pole on the derivative. A quarter of the sample rate: about
    1.3 kHz in the current loop, 64 Hz in the speed loop. */
@@ -64,6 +66,7 @@ void pi_init(pi_state *s, int32_t kp, int32_t ki, int32_t out_max)
 {
   s->integ  = 0;
   s->kd     = 0;
+  s->ed_max = 0x7FFFFFFF;
   s->d_prev = 0;
   s->d_filt = 0;
   s->primed = 0u;
@@ -75,6 +78,7 @@ void pi_set_kd(pi_state *s, int32_t kd)
   if (kd < 0)         { kd = 0; }
   if (kd > PI_KD_MAX) { kd = PI_KD_MAX; }
   s->kd = kd;
+  s->ed_max = (kd > 0) ? (0x7FFFFFFF / kd) : 0x7FFFFFFF;
   if (kd == 0) {
     s->d_filt = 0;
   }
@@ -118,8 +122,8 @@ static int32_t pi_derivative(pi_state *s, int32_t meas)
     s->d_filt = 0;
     return 0;
   }
-  if (delta >  PI_D_DELTA_MAX) { delta =  PI_D_DELTA_MAX; }
-  if (delta < -PI_D_DELTA_MAX) { delta = -PI_D_DELTA_MAX; }
+  if (delta >  s->ed_max) { delta =  s->ed_max; }
+  if (delta < -s->ed_max) { delta = -s->ed_max; }
 
   raw = (s->kd * delta) >> 15;
   s->d_filt += (raw - s->d_filt) >> PI_D_FILTER_SHIFT;

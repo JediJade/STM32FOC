@@ -300,13 +300,13 @@ typedef struct {
 static const param_def params[P_COUNT] = {
   { "ckp",     0,  262144 },    /* current Kp, Q15: up to 8.0            */
   { "cki",     0,   32767 },    /* current Ki, Q15 per 50 us period      */
-  { "ckd",     0,   65536 },    /* current Kd, Q15 per count of change   */
+  { "ckd",     0,  262144 },    /* current Kd, Q15: up to 8.0            */
   { "cdec",    0,       2 },    /* feed-forward: off, fixed, with speed  */
   { "ccross",  0,   65535 },    /* cross-coupling feed-forward, Q15      */
   { "cemf",    0,  131071 },    /* back-EMF feed-forward, Q15            */
   { "skp",     0, 1048576 },    /* speed Kp, Q15: up to 32.0             */
   { "ski",     0,  131072 },    /* speed Ki, Q15 per 1 ms tick           */
-  { "skd",     0,   65536 },    /* speed Kd, Q15 per unit of change      */
+  { "skd",     0, 1048576 },    /* speed Kd, Q15: up to 32.0             */
   { "simax", 256,   29491 },    /* current the speed loop may ask for    */
   { "pkp",     0,   32768 },    /* position Kp, Q15                      */
 
