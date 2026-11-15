@@ -605,26 +605,45 @@ would follow that and admit more noise the rest of the time; 102 ms is a
 choice, not a law, and `iztrk 0` plus a step response is how to argue
 with it.
 
-**The pins have ripple on them, and that is why the report used to lie.**
-A 300 kHz carrier through 10k and 10nF leaves about 3.3 V / (2 pi f RC),
-some 17 mV or 21 counts peak to peak. The conversion is triggered by TIM1,
-so the loop samples that ripple at one fixed point in every PWM period,
-while anything reading the register from the main loop lands anywhere on
-it. Switching the bench's DAC off settles the question:
+**The `i` report disagrees with the loop by about 19 counts, and I do not
+yet know why.** Subtract `zero` from `raw` on a report line and you get
+around -18. Ask the loop what it measured over the same stretch and it
+says +0.8. Both numbers are the same two variables, `i_raw_a` and
+`i_zero_a`, one pair read from the main loop and the other used in the
+interrupt that writes them.
 
-```
-  carrier on    console raw 2249.2 +/- 3.4, spread 17   zero 2262.5   gap -13.3
-  carrier off   console raw    0.0 +/- 0.0, spread  0   zero    0.0   gap  +0.0
-  carrier on    console raw 2251.6 +/- 4.7, spread 26   zero 2266.4   gap -14.8
-```
+Three explanations have been tried and each one is refuted by its own
+measurement, which is worth recording so nobody spends the afternoon
+again:
 
-The spread is the ripple, near enough to the 21 counts the arithmetic
-predicts. The gap is half of it, and it meant `raw` minus `zero` in the
-`i` report was not what the loop had subtracted: the current page's chain
-of stages did not add up, and the only clue was that the numbers were
-slightly wrong. The ISR now keeps the two readings it used and the report
-prints those. It also makes `izero` average the samples the loop sees
-rather than a different set of samples of the same signal.
+*The loop samples ripple at a fixed phase while the console samples it
+anywhere.* A 300 kHz carrier through 10k and 10nF does leave about
+3.3 V / (2 pi f RC), some 17 mV or 21 counts peak to peak, and the spread
+of repeated console reads is 11 to 26 counts, which fits. But the ISR now
+stashes the readings it used and the report prints those, so both sides
+read the same samples - and the gap did not move.
+
+*The capture window is too short to average a beat.* The carrier is
+exactly fifteen times the sampling rate, so two crystals 60 ppm apart
+alias to a beat near 18 Hz, a 55 ms period that 6.4 ms of capture cannot
+average. Refuted: a 205 ms window gives +2.4 units and a 6.4 ms window
++0.1, both near zero, both repeatable.
+
+*The console's own USB traffic pulls the rail while it reads.* Refuted:
+one read after two seconds of silence gives -18.0, one at the end of a
+burst of commands gives -17.9.
+
+What is not in doubt is which number the loop acts on. The capture
+records `last_ia`, assigned from the same `ia` the controllers are handed,
+and over a 205 ms window at idle it reads under one count of current. The
+zero the drive keeps is right where it needs to be; it is the report that
+cannot be reconciled with it, and the honest state of this is an open
+question rather than a cause.
+
+The reporting change is still worth having on its own terms - the report
+now prints what the ISR used rather than a fresh look at a register the
+ISR had already moved past, and `izero` averages that same stream - but
+it did not explain the gap and it should not be read as having done so.
 
 That is the half that makes a load mean something. With a brake applied to
 the rotor inside the other chip, at a held speed of 1200 units/ms:
