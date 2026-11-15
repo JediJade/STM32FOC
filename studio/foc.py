@@ -717,6 +717,7 @@ class TunePage(Page):
             self.rows.append((lamp, value))
         self._lamps = [None] * len(self.rows)
         self.t_msg = self.text(xa, 566, "", 13, B.INK2, width=xb - xa)
+        self.t_about = self.text(xa, 748, "", 12, B.INK3, width=xb - xa)
 
         self.b_start = B.RoundButton(cv, xa + 46, 664, 84, B.ORANGE,
                                      app.tune_start, label="start", label_size=12)
@@ -803,6 +804,8 @@ class TunePage(Page):
                 self._lamps[i] = color
                 cv.itemconfigure(lamp, image=B.disc(14, color, flat=True))
             self.set(value, step["value"])
+        about, colour = tuning_target(app)
+        self.set(self.t_about, about, colour)
         self.set(self.t_msg, NOTE_TUNE if (app.board and not on_board)
                  else tune.message)
         self.b_start.set_color(B.ORANGE if not tune.active else B.SLOT)
@@ -1737,9 +1740,8 @@ class BenchPage(Page):
                   "not calibrated. Spin the shaft - or let the HIL board "
                   "turn its model - and run this.", 12, B.INK2,
                   width=xb - xa - 180)
-        B.RoundButton(cv, xb - 80, y + 44, 48, B.YELLOW,
-                      lambda: self.command("hallcal"), label="calibrate",
-                      label_size=11)
+        B.RoundButton(cv, xb - 80, y + 44, 48, B.YELLOW, self.calibrate,
+                      label="calibrate", label_size=11)
         self.t_msg = self.text(xa, y + 96, "", 13, B.ORANGE, width=xb - xa)
 
         xc = 688
@@ -1867,6 +1869,27 @@ class BenchPage(Page):
             return
         link.send(text)
         self.msg = f"sent {text}. watch the hall table line."
+
+    def calibrate(self):
+        """Measure the Hall edges, from the one state it works from.
+
+        `hallcal` turns the rotor itself, in open loop, and watches the
+        edges go by. Start it with the speed loop already running and it
+        is fighting a field that is rotating faster than a standing rotor
+        can pull in to: the shaft shakes, no edge is clean, and the board
+        reports that it was too slow to measure. Armed and otherwise
+        idle is the state it wants, so that is the state this button
+        puts the board in.
+        """
+        link = self.app.board
+        if link is None:
+            self.msg = "connect a board first."
+            return
+        link.send("off")
+        link.send("on")
+        link.send("hallcal")
+        self.msg = ("measuring the hall edges. it turns the rotor itself; "
+                    "watch the hall table line.")
 
     def set_isrc(self, src):
         """Where the loop reads its two phase currents.
@@ -2571,6 +2594,42 @@ class SyncPage(Page):
         else:
             self.set(self.reverse, "needs both boards, and the drive "
                                    "switching.")
+
+
+def tuning_target(app):
+    """One line on which motor a measurement is about to be about.
+
+    The same procedure, pointed at two different machines. Inside the
+    chip it identifies a model that nothing on the bench can load;
+    through the pins it identifies whatever is on the other end of the
+    wires, and the numbers that come back are different numbers.
+    """
+    link = app.board
+    if link is None:
+        return ("", B.INK3)
+    info = getattr(link, "isrc", None)
+    pins = link.veh.get("sens") == 1
+    amps = info is not None and info.get("src") == 1
+    bench = app.bench
+    if bench is not None and (bench.state.get("lock") or
+                              bench.state.get("load")):
+        held = bench.state.get("lock")
+        return (("the bench's shaft is clamped: nothing measured now means "
+                 "anything." if held else
+                 "the bench has a drag of %s on its shaft, and a motor "
+                 "measured under load is not this motor." %
+                 bench.state.get("load")) + "  page 4 takes it off.", B.RED)
+    if pins and amps:
+        return ("this will identify whatever is on the other end of the "
+                "wires - the bench board, or a real motor. not the model "
+                "in this chip.", B.INK2)
+    if pins:
+        return ("the angle comes off the pins but the currents still come "
+                "from the model in this chip, so this identifies that "
+                "model's winding. page 3 moves the currents across too.",
+                B.ORANGE)
+    return ("this identifies the model inside the chip. pages 2 and 3 move "
+            "the measurement onto the wires.", B.INK3)
 
 
 class PidPage(Page):

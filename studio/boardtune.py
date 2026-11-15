@@ -234,7 +234,16 @@ class BoardTune:
 
     def _idle(self):
         """Idle, and wait for the rotor. The firmware's model never quite
-        stops - it creeps at a few units per ms - so 'at rest' is a band."""
+        stops - it creeps at a few units per ms - so 'at rest' is a band.
+
+        And then arm again, if the currents are coming from the pins. The
+        model inside the chip is driven by the voltages the loop computes
+        whether or not the outputs are enabled, so every step in this
+        procedure worked with the bridge off and nobody noticed. A plant
+        on the far side of the pins only moves when the bridge actually
+        switches: leave it disarmed and the d-axis current never reaches
+        its target, which is what the failure said and not why.
+        """
         link = self.link
         link.send("off")
         yield from self._until(lambda: link.mode == "idle", 1.5,
@@ -249,6 +258,32 @@ class BoardTune:
             return False
 
         yield from self._until(at_rest, 6.0, "the rotor did not come to rest.")
+        if self._pins():
+            link.send("on")
+            yield from self._wait(0.3)
+
+    @staticmethod
+    def _stop(link):
+        """Stop driving, without disarming a plant that is outside the chip.
+
+        `off` is the right way to stop when the motor is the model in the
+        same chip: it is driven by the computed voltages whether or not
+        the bridge is enabled, so disarming costs nothing. A plant on the
+        far side of the pins only moves while the bridge switches, and
+        disarming it between steps means the next step measures a motor
+        that is no longer connected to anything.
+        """
+        info = getattr(link, "isrc", None)
+        if info is not None and info.get("src") == 1:
+            link.send("vd 0")
+            link.send("id 0")
+        else:
+            link.send("off")
+
+    def _pins(self):
+        """True when the loop reads its currents off the ADC pins."""
+        info = getattr(self.link, "isrc", None)
+        return info is not None and info.get("src") == 1
 
     def _record(self, channel, divider, command):
         """Arm the recorder, send the command that starts it, wait, read."""
@@ -324,7 +359,7 @@ class BoardTune:
             if abs(i - level) > 0.1 * level:
                 raise TuneError("the d-axis current did not reach its target.")
             points.append((v, i))
-        link.send("off")
+        self._stop(link)
         (v1, i1), (v2, i2) = points
         if abs(v2 - v1) < 50:
             raise TuneError("the voltage hardly changed between the two currents.")
@@ -343,7 +378,7 @@ class BoardTune:
             yield from self._wait(0.06 + 256 * divider * TS)
             samples = yield from self._record("id", divider,
                                               f"vd {self.V_STEP}")
-            link.send("off")
+            self._stop(link)
             final, tau, settled = _first_order(samples, divider * TS)
             if final <= 0:
                 raise TuneError("no current flowed during the voltage step.")
