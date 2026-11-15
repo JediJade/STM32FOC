@@ -99,6 +99,8 @@ static uint8_t  i_zprimed;      /* the accumulator holds a real reading */
 static uint16_t i_zhold;        /* periods of idle still to wait out */
 static int32_t  i_zacc_a;       /* the zero, ZERO_FRAC fractional bits */
 static int32_t  i_zacc_b;
+static int32_t  i_raw_a = 2048; /* the readings the loop last used */
+static int32_t  i_raw_b = 2048;
 static int16_t  last_ia;
 static int16_t  last_ib;
 
@@ -321,10 +323,36 @@ int32_t foc_loop_igain(void)
   return i_gain;
 }
 
+/*
+ * The readings the loop actually used, not a fresh look at the register.
+ *
+ * These are not the same number. The conversion is triggered by TIM1, so
+ * the loop samples the pins at one fixed point in every PWM period,
+ * while anything reading the register from the main loop lands wherever
+ * it happens to land. On a signal with ripple on it - and a PWM output
+ * through an RC filter has ripple on it by construction - those two
+ * answers differ by a fixed amount, measured on this rig at about 14
+ * counts of the 20 the ripple spans.
+ *
+ * That made the report lie in a quiet way: `raw` minus `zero` was not
+ * what the loop had subtracted, so the current page's chain of stages
+ * did not add up to the current the loop was controlling, and the only
+ * clue was that the numbers were slightly wrong. Reporting what the ISR
+ * used costs two stores a period and makes the arithmetic on screen the
+ * arithmetic in the drive.
+ *
+ * With the model as the source the ISR never looks at the pins, so there
+ * is nothing stashed and the register is the only answer there is.
+ */
 void foc_loop_adc_raw(int32_t *a, int32_t *b)
 {
-  *a = (int32_t)(ADC1->JDR1 & 0xFFFu);
-  *b = (int32_t)(ADC2->JDR1 & 0xFFFu);
+  if (i_src != 0u) {
+    *a = i_raw_a;
+    *b = i_raw_b;
+  } else {
+    *a = (int32_t)(ADC1->JDR1 & 0xFFFu);
+    *b = (int32_t)(ADC2->JDR1 & 0xFFFu);
+  }
 }
 
 void foc_loop_last_phase(int16_t *ia, int16_t *ib)
@@ -379,6 +407,11 @@ foc_dq foc_loop_step(void)
     int32_t raw_a = (int32_t)(ADC1->JDR1 & 0xFFFu);
     int32_t raw_b = (int32_t)(ADC2->JDR1 & 0xFFFu);
     int32_t ra, rb;
+
+    /* Kept so the console can report what the loop saw rather than what
+       the register happens to hold when somebody asks. */
+    i_raw_a = raw_a;
+    i_raw_b = raw_b;
 
     /*
      * An idle loop commands no voltage, so there is no current in the

@@ -560,6 +560,72 @@ current, averaged over 40 ms, because that offset is subtracted from every
 reading afterwards and a noisy estimate of it becomes a standing error on
 i_d that looks exactly like a decoupling problem.
 
+**The zero will not stay still.** This chain is a PWM output, an RC filter
+and an ADC input, and nothing in it shares a reference. Twelve minutes of
+it, logged on the board - two of idle, three bursts of a minute's driving
+to warm it, then a five minute tail:
+
+```
+                        the reading   a zero learned once   what the loop
+                                        would have read      measured
+  idle, 110 s                  2173          -18 counts         -6 units
+  after a minute driving       2137          -54                -1
+  after two                    2049         -142               -12
+  after three                  2041         -150                -9
+  cooling, 540 s               1746         -445              -300
+  settled, 737 s               2251          +60                +2
+
+  the reading moved 520 counts over the run (1737 .. 2257)
+  a zero learned once: worst 454 counts out, 3632 units of phantom current
+  the zero the drive keeps:  worst  71 counts out,  568 units
+```
+
+Three thousand six hundred units is twenty-two per cent of full scale.
+That made `izero` a trap, because a constant error in a current
+measurement is the worst kind: it looks exactly like a real current, so
+the integrator drives the motor to cancel something that is not there,
+and nothing asked you to run `izero` again. Driving is what moves it
+fastest, which is the worst possible timing - the zero goes stale during
+the very activity that needs it.
+
+So the drive keeps the zero itself. An idle loop commands no voltage, so
+whatever the pins read then is the zero: a one-pole filter over those
+readings, 102 ms of time constant, held off for 20 ms after the loop stops
+because the winding needs 2.1 ms through the wires to let go of the current
+it was carrying and idle is not the same as currentless. It is frozen the
+moment the loop has work to do - those same pins then carry a current the
+drive is trying to control, and a zero learned from that would have the
+controller cancelling its own output. `iztrk 0` turns it off, which is how
+to see what the drift costs.
+
+What it does not fix is a fast excursion. The dip at 540 s above moved
+hundreds of counts between samples, and for a few hundred milliseconds
+the loop measured -300 units that were not there. A shorter time constant
+would follow that and admit more noise the rest of the time; 102 ms is a
+choice, not a law, and `iztrk 0` plus a step response is how to argue
+with it.
+
+**The pins have ripple on them, and that is why the report used to lie.**
+A 300 kHz carrier through 10k and 10nF leaves about 3.3 V / (2 pi f RC),
+some 17 mV or 21 counts peak to peak. The conversion is triggered by TIM1,
+so the loop samples that ripple at one fixed point in every PWM period,
+while anything reading the register from the main loop lands anywhere on
+it. Switching the bench's DAC off settles the question:
+
+```
+  carrier on    console raw 2249.2 +/- 3.4, spread 17   zero 2262.5   gap -13.3
+  carrier off   console raw    0.0 +/- 0.0, spread  0   zero    0.0   gap  +0.0
+  carrier on    console raw 2251.6 +/- 4.7, spread 26   zero 2266.4   gap -14.8
+```
+
+The spread is the ripple, near enough to the 21 counts the arithmetic
+predicts. The gap is half of it, and it meant `raw` minus `zero` in the
+`i` report was not what the loop had subtracted: the current page's chain
+of stages did not add up, and the only clue was that the numbers were
+slightly wrong. The ISR now keeps the two readings it used and the report
+prints those. It also makes `izero` average the samples the loop sees
+rather than a different set of samples of the same signal.
+
 That is the half that makes a load mean something. With a brake applied to
 the rotor inside the other chip, at a held speed of 1200 units/ms:
 
@@ -592,11 +658,20 @@ stage by stage with live numbers: counts, volts, counts about the learned
 zero, Q15, and what the loop made of it. When that path breaks, every stage
 after the break still produces a number and all of them look like currents.
 
-The console commands are `isrc`, `iscl` and `izero`, and they are commands
-rather than numbered parameters on purpose: the flash store keys its record
-on how many parameters the console has, so adding two would throw away every
-board's saved settings and Hall table to announce a feature those boards may
-not even be wired for.
+The console commands are `isrc`, `iscl`, `izero` and `iztrk`, and they are
+commands rather than numbered parameters on purpose: the flash store keys its
+record on how many parameters the console has, so adding four would throw
+away every board's saved settings and Hall table to announce a feature those
+boards may not even be wired for. The `i` report prints the source, the
+zero, the gain, the raw readings and whether the drive is keeping the zero
+itself; the host's regex for that line is anchored at both ends, so the
+trailing field is an optional group and one studio reads a board from either
+side of the change that added it.
+
+One edge this leaves: typing `isrc 1` while the loop is already running
+cannot prime the tracker, because the pins are carrying a current at that
+moment, so the zero stays wherever it was until the loop next goes idle.
+The studio sends `off` before it switches, so the only way there is by hand.
 
 ## The gate on MOE
 
