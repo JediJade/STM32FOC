@@ -198,6 +198,7 @@ static void print_help(void)
   line("  isrc <0|1> 0 the model in this chip, 1 the ADC pins PA0 and PA1");
   line("  iscl <n>   Q15 per ADC count when reading the pins");
   line("  izero      learn what the two pins read with no current");
+  line("  iztrk <0|1> keep relearning it while the loop is idle");
   line("  hall       the edges it learned");
   line("  olf        the one-line frame last sent");
   line("  can        CAN state; `can on` changes over to it");
@@ -601,6 +602,8 @@ static void print_current_source(void)
   p = put_int(p, ra);
   *p++ = ' ';
   p = put_int(p, rb);
+  p = put_str(p, " trk ");
+  p = put_int(p, (int32_t)foc_loop_ztrack());
   *p++ = '\r';
   *p++ = '\n';
   emit(buf, (uint16_t)(p - buf));
@@ -899,6 +902,9 @@ static void dispatch(void)
     print_current_source();
   } else if ((arg = after_word(cmd, "iscl")) != 0) {
     foc_loop_set_igain(parse_int(arg));
+    print_current_source();
+  } else if ((arg = after_word(cmd, "iztrk")) != 0) {
+    foc_loop_set_ztrack((int)parse_int(arg));
     print_current_source();
   } else if (after_word(cmd, "izero") != 0) {
     cmd_izero();

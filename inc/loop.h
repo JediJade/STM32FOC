@@ -159,6 +159,15 @@ foc_dq   foc_loop_last_dq(void);
 void     foc_loop_set_isrc(int src);
 int      foc_loop_isrc(void);
 void     foc_loop_set_izero(int32_t a, int32_t b);
+
+/*
+ * Whether the drive keeps its own current zero, which it does by
+ * reading the pins while the loop is idle and has commanded no voltage.
+ * On by default. Turning it off leaves the zero exactly where `izero`
+ * last put it, which is how to see what the drift costs.
+ */
+void     foc_loop_set_ztrack(int on);
+int      foc_loop_ztrack(void);
 void     foc_loop_get_izero(int32_t *a, int32_t *b);
 void     foc_loop_set_igain(int32_t gain);
 int32_t  foc_loop_igain(void);

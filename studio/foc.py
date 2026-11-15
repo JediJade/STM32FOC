@@ -2214,10 +2214,15 @@ class CurrentPage(Page):
             self.set(b, "–" if vb is None else B.num(vb, dec))
         self.cv.itemconfigure(self.chain[4][1], fill=B.ORANGE)
 
+        track = info.get("track")
+        who = ("the drive keeps this itself, relearning it whenever the "
+               "loop is idle." if track else
+               "held where izero last put it. This chain drifts, so it "
+               "will not stay right for long." if track == 0 else "")
         self.set(self.t_zero,
                  f"zero at {info['zero_a']} and {info['zero_b']} counts, "
                  f"which is {info['zero_a'] / 4096.0 * self.VDDA:.3f} V and "
-                 f"{info['zero_b'] / 4096.0 * self.VDDA:.3f} V.")
+                 f"{info['zero_b'] / 4096.0 * self.VDDA:.3f} V. {who}")
         self.set(self.t_gain, str(g))
 
         if len(self.a) > 4:

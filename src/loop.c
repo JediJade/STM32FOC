@@ -71,6 +71,34 @@ static uint8_t  i_src;          /* 0 the model, 1 the ADC pins */
 static int32_t  i_zero_a = 2048;
 static int32_t  i_zero_b = 2048;
 static int32_t  i_gain   = 8;   /* Q15 per ADC count */
+
+/*
+ * Keeping the zero.
+ *
+ * ZERO_FRAC fractional bits under the accumulator so the filter can move
+ * by less than a whole count: without them anything smaller than
+ * 1 << ZERO_SHIFT counts of error can never be corrected, and the
+ * tracker would have a dead zone wider than the drift it exists to
+ * remove. 4095 << 16 is 268 million, comfortably inside int32.
+ *
+ * ZERO_SHIFT 11 is 2048 periods, 102 ms at 20 kHz. Three time constants
+ * is a third of a second, so arming and then typing a target leaves it
+ * settled, while a single noisy conversion moves the zero by a
+ * two-thousandth of its error.
+ */
+#define ZERO_FRAC   16
+#define ZERO_SHIFT  11
+
+/* Periods of idle to wait before believing the pins: the winding needs
+   about 2.1 ms to let go of the current it was carrying, and ten of
+   those is comfortably clear of it. */
+#define ZERO_HOLD   400u
+
+static uint8_t  i_ztrack = 1u;  /* track the zero while the loop is idle */
+static uint8_t  i_zprimed;      /* the accumulator holds a real reading */
+static uint16_t i_zhold;        /* periods of idle still to wait out */
+static int32_t  i_zacc_a;       /* the zero, ZERO_FRAC fractional bits */
+static int32_t  i_zacc_b;
 static int16_t  last_ia;
 static int16_t  last_ib;
 
@@ -244,6 +272,9 @@ foc_dq foc_loop_last_dq(void)
 void foc_loop_set_isrc(int src)
 {
   i_src = (src != 0) ? 1u : 0u;
+  /* Whatever zero was in there belonged to the other source. Take the
+     next idle reading as the truth rather than filtering towards it. */
+  i_zprimed = 0u;
 }
 
 int foc_loop_isrc(void)
@@ -255,6 +286,21 @@ void foc_loop_set_izero(int32_t a, int32_t b)
 {
   i_zero_a = a;
   i_zero_b = b;
+  /* An explicit zero is a starting point for the tracker, not something
+     it has to crawl away from. */
+  i_zacc_a  = a << ZERO_FRAC;
+  i_zacc_b  = b << ZERO_FRAC;
+  i_zprimed = 1u;
+}
+
+void foc_loop_set_ztrack(int on)
+{
+  i_ztrack = (on != 0) ? 1u : 0u;
+}
+
+int foc_loop_ztrack(void)
+{
+  return (int)i_ztrack;
 }
 
 void foc_loop_get_izero(int32_t *a, int32_t *b)
@@ -330,8 +376,38 @@ foc_dq foc_loop_step(void)
      * the Clarke transform below assumes and what two separate
      * conversions would quietly not give it.
      */
-    int32_t ra = (int32_t)(ADC1->JDR1 & 0xFFFu) - i_zero_a;
-    int32_t rb = (int32_t)(ADC2->JDR1 & 0xFFFu) - i_zero_b;
+    int32_t raw_a = (int32_t)(ADC1->JDR1 & 0xFFFu);
+    int32_t raw_b = (int32_t)(ADC2->JDR1 & 0xFFFu);
+    int32_t ra, rb;
+
+    /*
+     * An idle loop commands no voltage, so there is no current in the
+     * machine and whatever the pins read is the zero. Track it here and
+     * nowhere else: the moment the loop has work to do, those same pins
+     * carry a current it is trying to control, and a zero learned from
+     * that would have the controller cancelling its own output.
+     */
+    if (mode != LOOP_MODE_IDLE) {
+      i_zhold = ZERO_HOLD;
+    } else if (i_zhold != 0u) {
+      i_zhold--;
+    }
+
+    if ((i_ztrack != 0u) && (mode == LOOP_MODE_IDLE) && (i_zhold == 0u)) {
+      if (i_zprimed == 0u) {
+        i_zacc_a  = raw_a << ZERO_FRAC;
+        i_zacc_b  = raw_b << ZERO_FRAC;
+        i_zprimed = 1u;
+      } else {
+        i_zacc_a += ((raw_a << ZERO_FRAC) - i_zacc_a) >> ZERO_SHIFT;
+        i_zacc_b += ((raw_b << ZERO_FRAC) - i_zacc_b) >> ZERO_SHIFT;
+      }
+      i_zero_a = i_zacc_a >> ZERO_FRAC;
+      i_zero_b = i_zacc_b >> ZERO_FRAC;
+    }
+
+    ra = raw_a - i_zero_a;
+    rb = raw_b - i_zero_b;
 
     ia = q15_sat(ra * i_gain);
     ib = q15_sat(rb * i_gain);

@@ -303,8 +303,12 @@ STORE = re.compile(r"^sto state (\w+) boot (\w+) console (-?\d+) "
 VERSION = re.compile(r"^fw (\d+) cap (\d+)")
 PARAM = re.compile(r"^p (\w+) (-?\d+)$")
 DUMP = re.compile(r"^cap (\w+) div (\d+) n (\d+) state (\d+)$")
+# The trailing field arrived with the firmware that keeps its own zero.
+# Optional, so one studio reads a board from either side of that change:
+# the regex is anchored at both ends and would otherwise simply stop
+# matching, leaving the current page blank with no hint as to why.
 ISRC = re.compile(r"^i src (\d+) zero (-?\d+) (-?\d+) gain (-?\d+)"
-                  r" raw (-?\d+) (-?\d+)$")
+                  r" raw (-?\d+) (-?\d+)(?: trk (\d+))?$")
 
 MODE_REPLY = {
     "speed mode": "speed",
@@ -606,9 +610,12 @@ class BoardLink:
                 return False
         m = ISRC.match(line)
         if m:
-            g = [int(v) for v in m.groups()]
+            # track is None against firmware that does not report it,
+            # which is not the same as it being off.
+            g = [int(v) if v is not None else None for v in m.groups()]
             self.isrc = {"src": g[0], "zero_a": g[1], "zero_b": g[2],
-                         "gain": g[3], "raw_a": g[4], "raw_b": g[5]}
+                         "gain": g[3], "raw_a": g[4], "raw_b": g[5],
+                         "track": g[6]}
             return False
         m = DUMP.match(line)
         if m:
