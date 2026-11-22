@@ -119,6 +119,18 @@ void capture_tick(void)
     v = ib;
     break;
   }
+  case CAPTURE_VREF: {
+    /* The same pairing for the reference: phase a, and VREFINT
+       converted a few microseconds after it in the same period. */
+    int16_t ia;
+    int16_t ib;
+
+    foc_loop_last_phase(&ia, &ib);
+    buf[count] = ia;
+    count++;
+    v = (int16_t)foc_loop_vref_raw();
+    break;
+  }
   default:            v = 0;                             break;
   }
 
@@ -127,7 +139,8 @@ void capture_tick(void)
   /* The pair channel has just written two, so it has to stop one
      short: a record must not end on half a pair. */
   if (count >= (uint16_t)(CAPTURE_LEN -
-                          ((channel == CAPTURE_IAB) ? 1u : 0u))) {
+                          (((channel == CAPTURE_IAB) ||
+                            (channel == CAPTURE_VREF)) ? 1u : 0u))) {
     state = CAPTURE_DONE;
   }
 }

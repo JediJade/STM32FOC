@@ -178,6 +178,15 @@ int      foc_loop_ztrack(void);
  */
 void     foc_loop_snapshot(int32_t *raw, int32_t *zero, int32_t *ra,
                            uint32_t *n);
+/*
+ * VREFINT, converted once a period on ADC1's regular group while on.
+ * A diagnostic: it tells a sag in VDDA, the ADC's reference, apart
+ * from a dip in the signal. Off at reset; it takes the regular group
+ * from the throttle pin while it is on.
+ */
+void     foc_loop_set_vref(int on);
+int      foc_loop_vref(void);
+int32_t  foc_loop_vref_raw(void);
 void     foc_loop_get_izero(int32_t *a, int32_t *b);
 void     foc_loop_set_igain(int32_t gain);
 int32_t  foc_loop_igain(void);

@@ -108,6 +108,10 @@ static int32_t  i_snap_raw;
 static int32_t  i_snap_zero;
 static int32_t  i_snap_ra;
 static uint32_t i_snap_n;
+/* VREFINT on ADC1's regular group, started from the ISR: see
+   foc_loop_set_vref. */
+static volatile uint8_t i_vref_on;
+static volatile int32_t i_vref_raw;
 static int16_t  last_ia;
 static int16_t  last_ib;
 
@@ -373,6 +377,44 @@ void foc_loop_snapshot(int32_t *raw, int32_t *zero, int32_t *ra,
   *ra   = i_snap_ra;
 }
 
+/*
+ * VREFINT is 1.20 V made inside the chip. Converted against VDDA it
+ * reads 1.20 / VDDA of full scale, about 1490 at 3.3 V, so a sag in
+ * VDDA - which is also this ADC's reference - makes the code go up
+ * by the same fraction. That is the one thing it can tell apart: if
+ * the dip after a USB reply is the reference moving, VREFINT moves
+ * with it; if it is the signal or its ground, VREFINT stays put.
+ *
+ * It uses ADC1's regular group, which is otherwise the throttle pin,
+ * and 239.5 cycles of sampling, which the datasheet asks for.
+ */
+void foc_loop_set_vref(int on)
+{
+  if (on != 0) {
+    ADC1->SMPR1 = (ADC1->SMPR1 & ~ADC_SMPR1_SMP17)
+                | (7u << ADC_SMPR1_SMP17_Pos);
+    ADC1->SQR1  = 0u;                          /* one conversion */
+    ADC1->SQR3  = 17u;
+    ADC1->CR2  |= ADC_CR2_TSVREFE | ADC_CR2_EXTSEL | ADC_CR2_EXTTRIG;
+    i_vref_raw  = 0;
+    i_vref_on   = 1u;
+  } else {
+    i_vref_on   = 0u;
+    ADC1->CR2  &= ~ADC_CR2_TSVREFE;
+    ADC1->SQR3  = 2u;                          /* the throttle pin again */
+  }
+}
+
+int foc_loop_vref(void)
+{
+  return (int)i_vref_on;
+}
+
+int32_t foc_loop_vref_raw(void)
+{
+  return i_vref_raw;
+}
+
 void foc_loop_last_phase(int16_t *ia, int16_t *ib)
 {
   *ia = last_ia;
@@ -471,12 +513,24 @@ foc_dq foc_loop_step(void)
      * `isnap` prints them with a sequence number. It reads about -16 as
      * well: the report is right about the moment it looks at, and that
      * moment is the dip the reading takes just after each USB command.
-     * `cap iab 1` shows the dip, about -9 counts for the first 300 us.
+     * `cap iab 1` shows the dip, about -9 counts for the first 150 us.
      */
     i_snap_raw  = raw_a;
     i_snap_zero = i_zero_a;
     i_snap_ra   = ra;
     i_snap_n++;
+
+    /* The regular conversion started one period ago has long finished:
+       it takes 21 us and the next trigger is 50 us away. Collect it and
+       start the next, so VREFINT is sampled a few microseconds after
+       the two pins, every period, without touching the injected
+       sequence the loop depends on. */
+    if (i_vref_on != 0u) {
+      if ((ADC1->SR & ADC_SR_EOC) != 0u) {
+        i_vref_raw = (int32_t)(ADC1->DR & 0xFFFu);
+      }
+      ADC1->CR2 |= ADC_CR2_SWSTART;
+    }
 
     ia = q15_sat(ra * i_gain);
     ib = q15_sat(rb * i_gain);

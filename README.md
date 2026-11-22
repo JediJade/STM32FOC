@@ -605,23 +605,28 @@ would follow that and admit more noise the rest of the time; 102 ms is a
 choice, not a law, and `iztrk 0` plus a step response is how to argue
 with it.
 
-**The `i` report disagrees with the loop by about 19 counts because it
-is always taken in the first few hundred microseconds after its own USB
-command, and the reading is low there.** Subtract `zero` from `raw` on a
-report line and you get around -18. Ask the loop what it measured over a
-longer stretch and it says under one count.
+**The `i` report disagreed with the loop by about 19 counts because it
+is always taken in the first hundred-odd microseconds after its own USB
+command, and on the rig as it was wired then the reading was low
+there.** Subtract `zero` from `raw` on a report line and you got around
+-18. Ask the loop what it measured over a longer stretch and it said
+under one count. With the rig rewired the gap is about 3 counts; see
+below.
 
 The measurement that settled it is the recorder at its finest divider.
-`cap iab 1` starts on the command that arms it, so sample 0 sits right
-behind a USB packet, and 256 samples at 50 us run 12.8 ms past it.
-Averaged over 30 records at idle with the bench carrier on:
+`cap iab 1` starts on the command that arms it, so the first pair sits
+right behind a USB packet, and 128 pairs at 50 us run 6.4 ms past it.
+(An earlier version of this table read the 256 values as 256 periods
+and doubled every time in it; `iab` is a then b from the same period.)
+Averaged over 30 records at idle with the bench carrier on, a and b
+together - they track each other to a tenth of a count:
 
 | after the command | mean reading | records below zero |
 | --- | --- | --- |
-| 0 - 300 us | -8.6 counts | 29 / 30 |
-| 300 - 600 us | -3.3 counts | 21 / 30 |
-| 0.6 - 2 ms | -0.7 counts | 15 / 30 |
-| 2 - 12.8 ms | +0.2 counts | 13 / 30 |
+| 0 - 150 us | -8.6 counts | 29 / 30 |
+| 150 - 300 us | -3.3 counts | 21 / 30 |
+| 0.3 - 1 ms | -0.7 counts | 15 / 30 |
+| 1 - 6.4 ms | +0.2 counts | 13 / 30 |
 
 `isnap` copies `raw`, `zero` and their difference out of the interrupt
 at the moment the console handles the command, and over the same 30
@@ -637,23 +642,48 @@ been narrowed down, each against a record's own tail:
 | test | result |
 | --- | --- |
 | four empty lines during a record: OUT packets, no reply | no dip beyond the arming command's |
-| `?` during a record: 1928 bytes of reply | the reading goes *up*, about +14 counts, for the ~8 ms the reply takes |
+| `?` during a record: 1928 bytes of reply | the reading goes *up*, about +14 counts, for the ~4 ms the reply takes |
 | both channels, 30 `i` reads | A -20.3, B -20.5: the same on ADC2, which converts nothing else |
-| bench USB cable unplugged, bench on ST-Link power | `i` -24.5 / -24.5, first 300 us -7.3 (17 / 20) |
+| bench USB cable unplugged, bench on ST-Link power | `i` -24.5 / -24.5, first 150 us -7.3 (17 / 20) |
 
 So it comes with the drive *replying*, not with it being spoken to; it is
 common to both channels, which rules out the throttle conversion that
 shares ADC1; and taking one of the ground loops out did not remove it.
 The CPU never sleeps in this firmware, so "the CPU waking" is not it
 either. A short reply pulling the reading down and a long one pushing it
-up is not explained. Still open: a single ground path between the two
-boards (tried by feeding the bench from the drive's 3.3 V; the drive
-would not stay on the bus that way, so it was not measured), and the
-drive's own VDDA, which an injected conversion of VREFINT would show.
+up is not explained. A single ground path between the two boards was
+tried by feeding the bench from the drive's 3.3 V, and it was not
+measured: the drive's rail sagged far enough (VREFINT later put it near
+2.9 V) that the drive kept dropping off the bus and the bench would not
+run.
 
-What it costs the loop is small - a few counts for a third of a
-millisecond each time the drive replies - but it is there whenever
-telemetry is streaming.
+**Then it went away, and the wiring is the only thing that changed.**
+After the rig was put back together - drive on its USB, bench on its USB
+and the ST-Link's 3.3 V, SWD on the drive, the 3.3 V link between the
+boards removed - the same tests, 30 records each, interleaved:
+
+| | first 150 us | 150 - 300 us | `i` raw - zero |
+| --- | --- | --- | --- |
+| before | -8.6 (29 / 30 below zero) | -3.3 | -20.3 |
+| after, `ivref 0` | +0.3 (11 / 30) | +0.4 | -2.9 (sd 3.5) |
+| after, `ivref 1` | +0.1 (10 / 30) | +0.4 | -3.3 (sd 4.7) |
+
+Same firmware, same commands. Which connection made the difference was
+not isolated; every lead was moved at least once along the way, so a
+poor ground somewhere in the earlier arrangement fits, and is not
+proven. What the measurement does say is that it was the rig, not the
+drive's code. If the `i` report starts reading tens of counts below its
+own zero again, reseat the harness ground before suspecting anything
+else.
+
+`ivref 1` converts VREFINT once a period (see below), and it answered
+the other open question. Over a minute at idle the tracked zero wandered
+130 counts while VREFINT stayed within 13 - and 13 counts of VREFINT is
+under 1 %, which moves a 1850-count reading by about 15. The zero's
+wander is in the signal or the ground between the boards, not in the
+drive's own reference. VREFINT read about 1620, which is 3.0 V of VDDA if
+the reference is the typical 1.20 V; that is uncalibrated and the
+datasheet allows a few percent either way.
 
 The earlier USB test below missed it because every read it compared was
 preceded by its own command, silent or not.
@@ -730,6 +760,15 @@ zero, the gain, the raw readings and whether the drive is keeping the zero
 itself; the host's regex for that line is anchored at both ends, so the
 trailing field is an optional group and one studio reads a board from either
 side of the change that added it.
+
+Two diagnostics sit beside them. `isnap` prints one interrupt's own
+`raw`, `zero`, their difference and a sequence number, plus `vref`. And
+`ivref 1` converts VREFINT on ADC1's regular group, started from the ISR
+right after the injected pair, so it is sampled a few microseconds after
+the pins every period without touching the sequence the loop runs on;
+`cap vref 1` then records phase a and VREFINT as pairs. It borrows the
+regular group from the throttle pin, so while it is on a pin throttle
+reads zero. It is off at reset.
 
 One edge this leaves: typing `isrc 1` while the loop is already running
 cannot prime the tracker, because the pins are carrying a current at that

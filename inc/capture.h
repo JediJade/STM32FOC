@@ -34,6 +34,7 @@ typedef enum {
   CAPTURE_AERR,         /* angle used minus the model's true angle */
   CAPTURE_IDFW,         /* field-weakening current                 */
   CAPTURE_IAB,          /* both phase currents, a b a b            */
+  CAPTURE_VREF,         /* phase a and raw VREFINT, a v a v        */
   CAPTURE_CHANNELS
 } capture_channel;
 

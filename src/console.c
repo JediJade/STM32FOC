@@ -186,7 +186,7 @@ static void print_help(void)
   line("  id <n>     d-axis current target (Q15), used in current mode");
   line("  vd <n>     voltage mode: v_d = n, v_q = 0, no controller");
   line("  cap <ch> <div>  arm the recorder: id iq vd vq spd ang");
-  line("             also ol (one-line pin), hall, aerr, idfw, iab");
+  line("             also ol (one-line pin), hall, aerr, idfw, iab, vref");
   line("  trig       start an armed recorder now");
   line("  dump       print what the recorder holds");
   line("  v          throttle, brake, sensor, weakening");
@@ -200,6 +200,7 @@ static void print_help(void)
   line("  izero      learn what the two pins read with no current");
   line("  iztrk <0|1> keep relearning it while the loop is idle");
   line("  isnap      one interrupt's own raw, zero and difference");
+  line("  ivref <0|1> convert VREFINT every period (takes the throttle ADC)");
   line("  hall       the edges it learned");
   line("  olf        the one-line frame last sent");
   line("  can        CAN state; `can on` changes over to it");
@@ -483,7 +484,7 @@ static void cmd_set(const char *args)
 
 static const char *const cap_names[CAPTURE_CHANNELS] = {
   "id", "iq", "vd", "vq", "spd", "ang", "ol", "hall", "aerr", "idfw",
-  "iab"
+  "iab", "vref"
 };
 
 static void cmd_cap(const char *args)
@@ -501,14 +502,15 @@ static void cmd_cap(const char *args)
       capture_arm((capture_channel)i, (uint16_t)div);
       /* `cap iab` is for watching, not for catching a step: no new
          target is coming to start it, so it starts itself. */
-      if ((capture_channel)i == CAPTURE_IAB) {
+      if (((capture_channel)i == CAPTURE_IAB) ||
+          ((capture_channel)i == CAPTURE_VREF)) {
         capture_trigger();
       }
       line("cap armed");
       return;
     }
   }
-  line("? cap <id|iq|vd|vq|spd|ang|ol|hall|aerr|idfw|iab> <divider>");
+  line("? cap <id|iq|vd|vq|spd|ang|ol|hall|aerr|idfw|iab|vref> <divider>");
 }
 
 static void cmd_dump(void)
@@ -599,6 +601,8 @@ static void print_snapshot(void)
   p = put_int(p, ra);
   p = put_str(p, " n ");
   p = put_int(p, (int32_t)n);
+  p = put_str(p, " vref ");
+  p = put_int(p, foc_loop_vref() ? foc_loop_vref_raw() : -1);
   *p++ = '\r';
   *p++ = '\n';
   emit(buf, (uint16_t)(p - buf));
@@ -921,6 +925,9 @@ static void dispatch(void)
   } else if ((arg = after_word(cmd, "cap")) != 0) {
     cmd_cap(arg);
   } else if (after_word(cmd, "isnap") != 0) {
+    print_snapshot();
+  } else if ((arg = after_word(cmd, "ivref")) != 0) {
+    foc_loop_set_vref((int)parse_int(arg));
     print_snapshot();
   } else if ((arg = after_word(cmd, "isrc")) != 0) {
     foc_loop_set_isrc((int)parse_int(arg));

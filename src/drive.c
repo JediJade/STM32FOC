@@ -291,7 +291,12 @@ static void vehicle_tick(void)
   int32_t pos = 0;
   int32_t speed;
 
-  if (drive_p[DP_INSRC] != 0) {
+  if ((drive_p[DP_INSRC] != 0) && (foc_loop_vref() != 0)) {
+    /* The regular group is converting VREFINT for a diagnostic: what
+       it holds is not a throttle, so there is no throttle. */
+    raw   = 0;
+    brake = (uint8_t)(((GPIOB->IDR & (1u << 11)) == 0u) ? 1u : 0u);
+  } else if (drive_p[DP_INSRC] != 0) {
     if ((ADC1->SR & ADC_SR_EOC) != 0u) {
       th_adc = (int32_t)(ADC1->DR & 0xFFFu);
     }
