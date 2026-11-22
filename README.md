@@ -631,11 +631,29 @@ report only ever looks at one moment, and that moment is the one with a
 dip in it.
 
 What makes the dip is not yet pinned down. The ADC is triggered by TIM1
-in hardware, so it is the voltage at the pin, not a late read: the USB
-transceiver, the CPU waking to handle the packet, or the ground current
-either one returns through. Which of those is an open question. What it
-costs the loop is small - a few counts for a third of a millisecond each
-time the host talks - but it is there whenever telemetry is streaming.
+in hardware, so it is the voltage at the pin, not a late read. What has
+been narrowed down, each against a record's own tail:
+
+| test | result |
+| --- | --- |
+| four empty lines during a record: OUT packets, no reply | no dip beyond the arming command's |
+| `?` during a record: 1928 bytes of reply | the reading goes *up*, about +14 counts, for the ~8 ms the reply takes |
+| both channels, 30 `i` reads | A -20.3, B -20.5: the same on ADC2, which converts nothing else |
+| bench USB cable unplugged, bench on ST-Link power | `i` -24.5 / -24.5, first 300 us -7.3 (17 / 20) |
+
+So it comes with the drive *replying*, not with it being spoken to; it is
+common to both channels, which rules out the throttle conversion that
+shares ADC1; and taking one of the ground loops out did not remove it.
+The CPU never sleeps in this firmware, so "the CPU waking" is not it
+either. A short reply pulling the reading down and a long one pushing it
+up is not explained. Still open: a single ground path between the two
+boards (tried by feeding the bench from the drive's 3.3 V; the drive
+would not stay on the bus that way, so it was not measured), and the
+drive's own VDDA, which an injected conversion of VREFINT would show.
+
+What it costs the loop is small - a few counts for a third of a
+millisecond each time the drive replies - but it is there whenever
+telemetry is streaming.
 
 The earlier USB test below missed it because every read it compared was
 preceded by its own command, silent or not.
