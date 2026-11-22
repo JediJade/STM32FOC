@@ -101,6 +101,13 @@ static int32_t  i_zacc_a;       /* the zero, ZERO_FRAC fractional bits */
 static int32_t  i_zacc_b;
 static int32_t  i_raw_a = 2048; /* the readings the loop last used */
 static int32_t  i_raw_b = 2048;
+
+/* One interrupt's own view of raw, zero and their difference, for
+   comparing the console against the loop. See where they are filled. */
+static int32_t  i_snap_raw;
+static int32_t  i_snap_zero;
+static int32_t  i_snap_ra;
+static uint32_t i_snap_n;
 static int16_t  last_ia;
 static int16_t  last_ib;
 
@@ -355,6 +362,17 @@ void foc_loop_adc_raw(int32_t *a, int32_t *b)
   }
 }
 
+void foc_loop_snapshot(int32_t *raw, int32_t *zero, int32_t *ra,
+                       uint32_t *n)
+{
+  /* Read in one go and in this order; if an interrupt lands in the
+     middle, the sequence number moving is the signal that it did. */
+  *n    = i_snap_n;
+  *raw  = i_snap_raw;
+  *zero = i_snap_zero;
+  *ra   = i_snap_ra;
+}
+
 void foc_loop_last_phase(int16_t *ia, int16_t *ib)
 {
   *ia = last_ia;
@@ -441,6 +459,24 @@ foc_dq foc_loop_step(void)
 
     ra = raw_a - i_zero_a;
     rb = raw_b - i_zero_b;
+
+    /*
+     * One interrupt's view of its own arithmetic, so the console can be
+     * compared against the loop without inferring anything.
+     *
+     * Subtracting `zero` from `raw` on an `i` report line gives about
+     * -18 counts, while the current the loop hands its controllers says
+     * the difference is under one. Those are the same two variables.
+     * This records all three numbers at the instant they are used and
+     * `isnap` prints them with a sequence number. It reads about -16 as
+     * well: the report is right about the moment it looks at, and that
+     * moment is the dip the reading takes just after each USB command.
+     * `cap iab 1` shows the dip, about -9 counts for the first 300 us.
+     */
+    i_snap_raw  = raw_a;
+    i_snap_zero = i_zero_a;
+    i_snap_ra   = ra;
+    i_snap_n++;
 
     ia = q15_sat(ra * i_gain);
     ib = q15_sat(rb * i_gain);

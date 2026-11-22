@@ -605,16 +605,43 @@ would follow that and admit more noise the rest of the time; 102 ms is a
 choice, not a law, and `iztrk 0` plus a step response is how to argue
 with it.
 
-**The `i` report disagrees with the loop by about 19 counts, and I do not
-yet know why.** Subtract `zero` from `raw` on a report line and you get
-around -18. Ask the loop what it measured over the same stretch and it
-says +0.8. Both numbers are the same two variables, `i_raw_a` and
-`i_zero_a`, one pair read from the main loop and the other used in the
-interrupt that writes them.
+**The `i` report disagrees with the loop by about 19 counts because it
+is always taken in the first few hundred microseconds after its own USB
+command, and the reading is low there.** Subtract `zero` from `raw` on a
+report line and you get around -18. Ask the loop what it measured over a
+longer stretch and it says under one count.
 
-Three explanations have been tried and each one is refuted by its own
-measurement, which is worth recording so nobody spends the afternoon
-again:
+The measurement that settled it is the recorder at its finest divider.
+`cap iab 1` starts on the command that arms it, so sample 0 sits right
+behind a USB packet, and 256 samples at 50 us run 12.8 ms past it.
+Averaged over 30 records at idle with the bench carrier on:
+
+| after the command | mean reading | records below zero |
+| --- | --- | --- |
+| 0 - 300 us | -8.6 counts | 29 / 30 |
+| 300 - 600 us | -3.3 counts | 21 / 30 |
+| 0.6 - 2 ms | -0.7 counts | 15 / 30 |
+| 2 - 12.8 ms | +0.2 counts | 13 / 30 |
+
+`isnap` copies `raw`, `zero` and their difference out of the interrupt
+at the moment the console handles the command, and over the same 30
+reads it gives -16.0 (sd 4.9) - the report's gap, from inside the ISR.
+So the report and the loop do not disagree about the variables; the
+report only ever looks at one moment, and that moment is the one with a
+dip in it.
+
+What makes the dip is not yet pinned down. The ADC is triggered by TIM1
+in hardware, so it is the voltage at the pin, not a late read: the USB
+transceiver, the CPU waking to handle the packet, or the ground current
+either one returns through. Which of those is an open question. What it
+costs the loop is small - a few counts for a third of a millisecond each
+time the host talks - but it is there whenever telemetry is streaming.
+
+The earlier USB test below missed it because every read it compared was
+preceded by its own command, silent or not.
+
+The explanations tried before this one, kept so nobody spends the
+afternoon again:
 
 *The loop samples ripple at a fixed phase while the console samples it
 anywhere.* A 300 kHz carrier through 10k and 10nF does leave about
@@ -629,21 +656,20 @@ alias to a beat near 18 Hz, a 55 ms period that 6.4 ms of capture cannot
 average. Refuted: a 205 ms window gives +2.4 units and a 6.4 ms window
 +0.1, both near zero, both repeatable.
 
-*The console's own USB traffic pulls the rail while it reads.* Refuted:
-one read after two seconds of silence gives -18.0, one at the end of a
-burst of commands gives -17.9.
+*The console's USB traffic pulls the rail.* Taken as traffic before the
+read, refuted: one read after two seconds of silence gives -18.0, one at
+the end of a burst of commands gives -17.9. That test could not see the
+read's own packet, which is where the dip is.
 
 What is not in doubt is which number the loop acts on. The capture
 records `last_ia`, assigned from the same `ia` the controllers are handed,
-and over a 205 ms window at idle it reads under one count of current. The
-zero the drive keeps is right where it needs to be; it is the report that
-cannot be reconciled with it, and the honest state of this is an open
-question rather than a cause.
+and away from a command it reads under one count of current. The zero
+the drive keeps is right where it needs to be.
 
 The reporting change is still worth having on its own terms - the report
 now prints what the ISR used rather than a fresh look at a register the
-ISR had already moved past, and `izero` averages that same stream - but
-it did not explain the gap and it should not be read as having done so.
+ISR had already moved past - but it did not explain the gap and it
+should not be read as having done so.
 
 That is the half that makes a load mean something. With a brake applied to
 the rotor inside the other chip, at a held speed of 1200 units/ms:

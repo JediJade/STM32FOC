@@ -168,6 +168,16 @@ void     foc_loop_set_izero(int32_t a, int32_t b);
  */
 void     foc_loop_set_ztrack(int on);
 int      foc_loop_ztrack(void);
+
+/*
+ * One interrupt's view of its own current measurement: the reading, the
+ * zero it subtracted, their difference, and a count of how many times
+ * this has been filled. For comparing the console against the loop
+ * directly. It is what showed that the console's 19-count gap is the
+ * reading itself dipping just after each USB command (README).
+ */
+void     foc_loop_snapshot(int32_t *raw, int32_t *zero, int32_t *ra,
+                           uint32_t *n);
 void     foc_loop_get_izero(int32_t *a, int32_t *b);
 void     foc_loop_set_igain(int32_t gain);
 int32_t  foc_loop_igain(void);

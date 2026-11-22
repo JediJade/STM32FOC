@@ -199,6 +199,7 @@ static void print_help(void)
   line("  iscl <n>   Q15 per ADC count when reading the pins");
   line("  izero      learn what the two pins read with no current");
   line("  iztrk <0|1> keep relearning it while the loop is idle");
+  line("  isnap      one interrupt's own raw, zero and difference");
   line("  hall       the edges it learned");
   line("  olf        the one-line frame last sent");
   line("  can        CAN state; `can on` changes over to it");
@@ -581,6 +582,28 @@ static void print_extra(void)
  * right, and the fault is in two wires and two passives rather than in any
  * code.
  */
+static void print_snapshot(void)
+{
+  char buf[96];
+  char *p;
+  int32_t raw, zero, ra;
+  uint32_t n;
+
+  foc_loop_snapshot(&raw, &zero, &ra, &n);
+
+  p = put_str(buf, "isnap raw ");
+  p = put_int(p, raw);
+  p = put_str(p, " zero ");
+  p = put_int(p, zero);
+  p = put_str(p, " ra ");
+  p = put_int(p, ra);
+  p = put_str(p, " n ");
+  p = put_int(p, (int32_t)n);
+  *p++ = '\r';
+  *p++ = '\n';
+  emit(buf, (uint16_t)(p - buf));
+}
+
 static void print_current_source(void)
 {
   char buf[96];
@@ -897,6 +920,8 @@ static void dispatch(void)
     line("voltage mode");
   } else if ((arg = after_word(cmd, "cap")) != 0) {
     cmd_cap(arg);
+  } else if (after_word(cmd, "isnap") != 0) {
+    print_snapshot();
   } else if ((arg = after_word(cmd, "isrc")) != 0) {
     foc_loop_set_isrc((int)parse_int(arg));
     print_current_source();
