@@ -26,7 +26,7 @@
 ## 2. เอาโค้ดมา
 
 ```
-git clone --branch v0.7.0 https://github.com/JediJade/STM32FOC.git
+git clone --branch v0.7.1 https://github.com/JediJade/STM32FOC.git
 ```
 
 ถ้าไม่มี git ให้ดาวน์โหลดไฟล์ zip จากหน้า
@@ -73,7 +73,7 @@ make PROJECT=STM32FOC
 
 ```
    text    data     bss     dec     hex filename
-  26056     184    1956   28196    6e24 build/STM32FOC.elf
+  28432     208    2056   30696    77e8 build/STM32FOC.elf
 ```
 
 ไฟล์ที่ได้อยู่ในโฟลเดอร์ `build/` — ใช้ `STM32FOC.hex`
@@ -87,7 +87,7 @@ make PROJECT=STM32FOC
 Get-FileHash .\build\STM32FOC.hex -Algorithm SHA256
 ```
 
-ต้องขึ้นต้นด้วย `E1F8237E` ตรงกับที่ประกาศไว้ใน release v0.7.0
+ต้องขึ้นต้นด้วย `2732A099` ตรงกับที่ประกาศไว้ใน release v0.7.1
 ถ้าไม่ตรงแปลว่า toolchain คนละตัวกัน
 
 ---
